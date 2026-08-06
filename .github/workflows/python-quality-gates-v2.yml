@@ -815,6 +815,11 @@ jobs:
           # every other sentinel probe in this reusable workflow.
           git fetch --quiet origin live-defi-rollout:refs/remotes/origin/live-defi-rollout 2>&1 || \
             echo "::warning::could not fetch origin/live-defi-rollout — todo-regression check degrades to no-op this run"
+          # Needed for check_archive_candidates.sh --diff-base origin/main on the promote path
+          # (operator ruling 2026-08-06 — archive_candidates_content_verification_backlog_2026_08_06.md).
+          # Same best-effort shape as the LDR fetch above: a fetch failure degrades to baseline mode.
+          git fetch --quiet origin main:refs/remotes/origin/main 2>&1 || \
+            echo "::warning::could not fetch origin/main — archive-candidates check degrades to baseline mode this run"
           bash scripts/plan-hygiene/run_hygiene_sweep.sh --ci --no-regen
 
       - name: Upload coverage.xml for codebase-health (tests slice; best-effort)
