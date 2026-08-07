@@ -30,6 +30,14 @@ Full context: `unified-trading-pm/plans/active/shared_ci_workflow_repo_extractio
 One branch: `main`. No LDR/staging promotion tiers — there's no application code here to promote through tiers,
 just CI YAML. Every caller across the fleet should pin `@main`.
 
+`live-defi-rollout` also exists in this repo (a leftover from extraction) but is **not a live target** — nothing
+should push to it, and no caller should ever pin `@live-defi-rollout`. It genuinely diverged from `main` once
+(2026-08-06/07, both branches took independent hotfixes) and was reconciled + re-pointed to match `main`'s tip
+2026-08-07 (`unified-trading-pm/plans/active/issues/unified_trading_ci_no_promotion_tiers_divergence_2026_08_07.md`);
+`workspace-manifest.json` declares `promotion_model: "single_branch"` for this repo so the fleet's promotion-lag
+monitor doesn't try to treat the two as an LDR↔main pipeline pair. If it diverges again, that means something pushed
+to it directly — fix the pusher's habit, not the monitor.
+
 ## Updating
 
 These files are still authored/maintained the same way they always were (edited directly, or via
