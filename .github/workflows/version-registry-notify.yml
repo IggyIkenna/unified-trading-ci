@@ -1,0 +1,54 @@
+name: version-registry-notify
+
+# Reusable workflow (fleet_workflow_template_dedup_to_unified_trading_ci_2026_08_06.md todo 3):
+# hosts the logic every fleet repo's own `version-registry-notify.yml` used to carry as a full,
+# byte-identical local copy. Fires on a release tag push (`v*`) and forwards {repo, version, sha}
+# to unified-trading-pm's version-registry-update.yml, which does the CAS Firestore write (the GCP
+# creds + the store script live in PM, so the write is centralised — mirrors how the per-repo
+# quality-gates-v2 forwards ci-status to ci-status-update.yml).
+#
+# PURELY ADDITIVE: it only POSTs a repository_dispatch; it writes nothing locally and gates
+# nothing. The Firestore version registry it populates is a read-mirror.
+#
+# Canonical source. Callers are thin stubs: `on: push: tags: ["v*"]` (the local trigger every
+# caller must physically carry) + `uses: IggyIkenna/unified-trading-ci/.github/workflows/
+# version-registry-notify.yml@main` + `secrets: inherit`.
+
+on:
+  workflow_call:
+    inputs:
+      self_hosted_runner_labels:
+        description:
+          'JSON array of runner labels, e.g. ''["self-hosted","glue"]''. Empty string (default) =
+          ubuntu-latest — same shape as python-quality-gates-v2.yml''s already-shipped input.'
+        type: string
+        default: ""
+    secrets:
+      GH_PAT:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  notify-version-registry:
+    runs-on: ${{ inputs.self_hosted_runner_labels != '' && fromJSON(inputs.self_hosted_runner_labels) || 'ubuntu-latest' }}
+    steps:
+      - name: Forward release tag to the PM version registry
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          REPO="${GITHUB_REPOSITORY#*/}"
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA="${GITHUB_SHA}"
+          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Tag ${GITHUB_REF_NAME} → version '${VERSION}' is not plain 3-part X.Y.Z; not forwarding."
+            exit 0
+          fi
+          echo "Forwarding ${REPO} v${VERSION} @ ${SHA} to the PM version registry."
+          curl -s -X POST \
+            -H "Authorization: token ${GH_PAT}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY_OWNER}/unified-trading-pm/dispatches" \
+            -d "{\"event_type\": \"version-registry-update\", \"client_payload\": {\"repo\": \"${REPO}\", \"version\": \"${VERSION}\", \"sha\": \"${SHA}\"}}"
