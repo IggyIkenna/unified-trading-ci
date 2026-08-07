@@ -64,6 +64,12 @@ on:
           "true when this run's changeset was documentation-only (A1 fast-path: tests+typecheck slices skipped,
           lint-codex ran in full). Callers gate dispatch-cloud-build on it — no image rebuild for a docs change."
         value: ${{ jobs.quality-gates-v2.outputs.docs_only }}
+      billing_kill:
+        description:
+          "'true' when the run was an infrastructure-kill (billing wall / runner outage): content-gate
+          and slices both failed with no real execution — no code/test defect, nothing a worker can fix.
+          Callers should suppress ldr_qg_failure escalation dispatches when this is 'true'."
+        value: ${{ jobs.quality-gates-v2.outputs.billing_kill }}
     secrets:
       GH_PAT:
         required: false
@@ -882,6 +888,8 @@ jobs:
       docs_only: ${{ steps.vcheck.outputs.docs_only }}
       # Folded in from the former standalone record-qg-result job (2026-08-02 merge).
       recovered: ${{ steps.record_decide.outputs.recovered }}
+      # True when content-gate+slices both failed with no real execution (billing wall / outage kill).
+      billing_kill: ${{ steps.record_ci_status.outputs.billing_kill }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1091,6 +1099,7 @@ jobs:
           echo "ch_b64=${CH_B64}" >> "$GITHUB_OUTPUT"
 
       - name: Record CI status (branch-aware lifecycle)
+        id: record_ci_status
         if: always()
         shell: bash
         env:
@@ -1099,10 +1108,24 @@ jobs:
           TRIGGER_BRANCH: ${{ github.head_ref || github.ref_name }}
           BASE_REF: ${{ github.base_ref }}
           SLICES_RESULT: ${{ needs.qg-slices.result }}
+          CONTENT_GATE_RESULT: ${{ needs.content-gate.result }}
           CACHE_HIT: ${{ needs.content-gate.outputs.cache_hit }}
           CH_B64: ${{ steps.codebase_health.outputs.ch_b64 }}
         run: |
           [ -z "${GH_PAT}" ] && echo "GH_PAT not set — skipping ci-status-update" && exit 0
+          # Detect billing-wall / startup_failure: content-gate AND slices both failed with no real
+          # execution (runner never allocated). In a genuine QG failure, content-gate always succeeds
+          # (it's a git hash probe with all steps continue-on-error) — so both-failed is infra-kill,
+          # not a code/test defect. Mirrors detect_billing_block() in ci_failure_watcher.py.
+          BILLING_KILL=false
+          if [ "${CONTENT_GATE_RESULT}" = "failure" ] && [ "${SLICES_RESULT}" = "failure" ]; then
+            BILLING_KILL=true
+          fi
+          echo "billing_kill=${BILLING_KILL}" >> "$GITHUB_OUTPUT"
+          if [ "${BILLING_KILL}" = "true" ]; then
+            echo "::notice::Skipping ci_status FAILING dispatch — infrastructure-kill pattern (content-gate=failure, slices=failure). Likely billing wall / runner outage; not a code/test defect."
+            exit 0
+          fi
           # Branch→status mapping mirrors the ci_status lifecycle in ci-status-update.yml:
           #   main → MAIN_GREEN ; staging → STAGING_GREEN ; other → FEATURE_GREEN ; any fail → FAILING
           # A1 (ldr_trunk_promotion_decoupling): a green PR *into* staging INHERITS STAGING_GREEN
