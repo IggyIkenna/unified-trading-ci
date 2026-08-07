@@ -129,7 +129,7 @@ jobs:
             exit 0
           fi
 
-          BUILD_ID=$(cat /tmp/gcp_build_err.txt | grep -oP '[a-f0-9\-]{36}' | head -1 || true)
+          BUILD_ID=$(grep -oP '[a-f0-9\-]{36}' /tmp/gcp_build_err.txt | head -1 || true)
           if [ -z "$BUILD_ID" ]; then
             echo "WARNING: Could not parse Build ID from GCP response."
             echo "build_id=parse-failed" >> "$GITHUB_OUTPUT"
