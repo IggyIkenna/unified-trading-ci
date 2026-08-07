@@ -133,7 +133,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
           set -euo pipefail
-          TREE="$(git rev-parse HEAD^{tree})"
+          TREE="$(git rev-parse 'HEAD^{tree}')"
           # GATE-VERSION fingerprint (A2 Gap ① fix, ci-cost plan 2026-07-17): the gate's logic
           # lives in THREE homes, and any of them changing must rotate the key — otherwise a
           # byte-identical tree would skip a run the NEW gate could fail:
@@ -316,9 +316,11 @@ jobs:
             BEFORE="${{ github.event.before }}"
             git rev-parse --verify -q "${BEFORE}^{commit}" >/dev/null 2>&1 || BEFORE="HEAD~1"
             if ! git rev-parse --verify -q "${BEFORE}^{commit}" >/dev/null 2>&1; then
-              echo "metadata_only=false" >> "$GITHUB_OUTPUT"
-              echo "docs_only=false" >> "$GITHUB_OUTPUT"
-              echo "skip_slice=false" >> "$GITHUB_OUTPUT"
+              {
+                echo "metadata_only=false"
+                echo "docs_only=false"
+                echo "skip_slice=false"
+              } >> "$GITHUB_OUTPUT"
               echo "base commit unavailable (shallow / multi-commit push) → full QG"
               exit 0
             fi
@@ -731,7 +733,8 @@ jobs:
           LEG: ${{ matrix.slice }}
           DOCS_ONLY: ${{ steps.vcheck.outputs.docs_only }}
         run: |
-          export PATH="$(pwd)/.venv/bin:$PATH"
+          VENV_BIN="$(pwd)/.venv/bin"
+          export PATH="${VENV_BIN}:$PATH"
           set -o pipefail
           # cloud-providers.yaml SSOT for tests: PM (always cloned to ../unified-trading-pm)
           # ships a HARDCODED test SSOT so EVERY repo's tests resolve buckets without a per-repo
@@ -816,7 +819,8 @@ jobs:
           env.QG_CONTENT_HIT != 'true' && github.repository == 'IggyIkenna/unified-trading-pm'
         shell: bash
         run: |
-          export PATH="$(pwd)/.venv/bin:$PATH"
+          VENV_BIN="$(pwd)/.venv/bin"
+          export PATH="${VENV_BIN}:$PATH"
           # Needed for check_todo_regression.sh's origin-compare (it diffs plans/active/*.md
           # against origin/live-defi-rollout); this job's own checkout is a shallow fetch-depth:2
           # of the PR/push ref only, so live-defi-rollout is not otherwise present locally.
