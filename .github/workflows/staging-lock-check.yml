@@ -14,15 +14,11 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   check-staging-lock:
     name: check-staging-lock
     if: github.event_name == 'pull_request'
-    runs-on: ${{ inputs.self_hosted_runner_labels != '' && fromJSON(inputs.self_hosted_runner_labels) || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - name: trivial
-        run: echo "hello from single-job-with-if debug"
+        run: echo "hello from if-only debug"
