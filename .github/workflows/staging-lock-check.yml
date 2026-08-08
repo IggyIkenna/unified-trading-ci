@@ -16,7 +16,6 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   check-staging-lock:
@@ -25,4 +24,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: trivial
-        run: echo "hello from if+concurrency debug, plain runs-on"
+        run: echo "hello, concurrency WITHOUT cancel-in-progress"
