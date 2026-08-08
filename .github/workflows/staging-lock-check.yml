@@ -21,7 +21,8 @@ concurrency:
 jobs:
   check-staging-lock:
     name: check-staging-lock
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: trivial
-        run: echo "concurrency only, no if-condition"
+        run: echo "callee has concurrency; testing WITHOUT caller-side concurrency"
