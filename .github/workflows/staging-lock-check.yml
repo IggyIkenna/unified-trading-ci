@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check-staging-lock:
     name: check-staging-lock
@@ -21,4 +25,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: trivial
-        run: echo "hello from if-only debug"
+        run: echo "hello from if+concurrency debug, plain runs-on"
