@@ -54,19 +54,22 @@ permissions:
   contents: write
   issues: write
 
-# Serialize per-repo (the LDR→main fleet promote cadence, `*/15`, can fire several
-# pushes to main in quick succession). Restored 2026-08-07
-# (semver_agent_squash_promote_blind_to_patch_fixes_2026_08_07) — dropped when this
-# workflow was retargeted staging→main (2026-07-25) even though the pre-retarget
-# staging-triggered version HAD this group; without it, overlapping runs can each read
-# a stale `git describe --tags` baseline before the other's tag push lands, racing the
-# tag mint. `cancel-in-progress: true` is safe here: every run scans the FULL
-# BASELINE..HEAD range cumulatively (not per-commit), so only the latest push's run
-# needs to actually complete.
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# NO top-level `concurrency:` here (root cause found 2026-08-08, fleet-wide zero-jobs
+# parse failure — every one of the 21 migrated repos' Semver Agent runs failed with
+# GitHub's generic "This run likely failed because of a workflow file issue" and zero
+# jobs created, for 12+ hours after the 2026-08-06 template-hosting migration and the
+# 2026-08-08 char-limit fix, neither of which touched this). A `workflow_call`-triggered
+# reusable workflow evaluates `${{ github.ref }}`/`${{ github.workflow }}` in ITS OWN
+# context, not the caller's — a documented GH Actions footgun (see e.g.
+# github/community#35341, "Unexpected type of value '', expected type: String" for a
+# concurrency group referencing caller-relative context inside a called reusable
+# workflow) that GitHub's schema validator rejects at PARSE time, before any job is
+# created — exactly matching the zero-jobs symptom. The per-repo serialization this
+# was meant to provide is NOT lost: every caller's own thin stub (e.g.
+# instruments-service/.github/workflows/semver-agent.yml) already declares its own
+# `concurrency: group: ${{ github.workflow }}-${{ github.ref }}` in the CALLER's
+# context, where those expressions resolve correctly — that's the only copy that should
+# exist. Do not re-add a concurrency block here.
 
 jobs:
   semver:
