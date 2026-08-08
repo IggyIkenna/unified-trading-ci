@@ -16,12 +16,12 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check-staging-lock:
     name: check-staging-lock
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: trivial
-        run: echo "hello, concurrency WITHOUT cancel-in-progress"
+        run: echo "concurrency only, no if-condition"
