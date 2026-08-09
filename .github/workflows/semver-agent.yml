@@ -187,8 +187,10 @@ jobs:
             # the run failure either way (a missing webhook must not mask the halt).
             case "${SLACK_WEBHOOK_URL:-}" in
               https://*)
-                curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
-                  --data "$(jq -n --arg t "$TEXT" '{text:$t}')" && echo "CRITICAL page sent to Slack" || true ;;
+                if curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                  --data "$(jq -n --arg t "$TEXT" '{text:$t}')"; then
+                  echo "CRITICAL page sent to Slack"
+                fi ;;
               *) echo "SLACK_CI_WEBHOOK_URL not set/https — cannot page; failing the run loudly instead" ;;
             esac
             # Queue the page for the end-of-job ledger persist (alert-parity: every Slack
@@ -378,11 +380,13 @@ jobs:
             PATCH=$((PATCH + 1))
             NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
             echo "Version: $CURRENT → $NEW_VERSION (always_patch policy)"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-            echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "bump=patch" >> "$GITHUB_OUTPUT"
-            echo "bump_reason=always_patch policy (no label check)" >> "$GITHUB_OUTPUT"
+            {
+              echo "skip=false"
+              echo "new_version=$NEW_VERSION"
+              echo "current_version=$CURRENT"
+              echo "bump=patch"
+              echo "bump_reason=always_patch policy (no label check)"
+            } >> "$GITHUB_OUTPUT"
             SHA="${{ github.sha }}"
             OWNER="${{ github.repository_owner }}"
             gh api POST "/repos/${OWNER}/${{ inputs.repo_name }}/statuses/${SHA}" \
@@ -413,8 +417,10 @@ jobs:
               TEXT=":rotating_light: *CRITICAL — semver-agent version-bump dispatch FAILED* | ${{ inputs.repo_name }} v${NEW_VERSION} (always_patch) | dispatch to unified-trading-pm returned HTTP ${HTTP_STATUS} after 3 attempts. The PM versions baseline will NOT record ${NEW_VERSION} → re-bump-loop fuel. Re-dispatch manually + check update-repo-version.yml health. ${RUN_URL}"
               case "${SLACK_WEBHOOK_URL:-}" in
                 https://*)
-                  curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
-                    --data "$(jq -n --arg t "$TEXT" '{text:$t}')" && echo "CRITICAL page sent to Slack" || true ;;
+                  if curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                    --data "$(jq -n --arg t "$TEXT" '{text:$t}')"; then
+                    echo "CRITICAL page sent to Slack"
+                  fi ;;
                 *) echo "SLACK_CI_WEBHOOK_URL not set/https — cannot page; failing the run loudly instead" ;;
               esac
               # Queue the page for the end-of-job ledger persist (survives the exit 1).
@@ -541,17 +547,14 @@ jobs:
           if [ "$BASELINE" = "0.0.0" ]; then
             if git rev-parse HEAD~1 >/dev/null 2>&1; then
               DIFF_BASE="HEAD~1"
-              CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
             else
               # First commit in repo — diff against the empty tree
               DIFF_BASE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-              CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD)
             fi
           else
             # See step-level comment above (char-cap relocation, 2026-08-08).
             BASELINE_SHA_FOR_DIFF="${BASELINE_SHA:-HEAD~1}"
             DIFF_BASE="${BASELINE_SHA_FOR_DIFF}"
-            CHANGED_FILES=$(git diff --name-only "${BASELINE_SHA_FOR_DIFF}..HEAD" 2>/dev/null || echo "")
           fi
 
           # See step-level comment above (char-cap relocation, 2026-08-08).
@@ -660,11 +663,13 @@ jobs:
                 MAJOR_NEW=$((MAJOR + 1))
                 BUMP_REASON="feat!: or removed public export/route (MAJOR required on post-1.0.0 repo)"
                 echo "Post-1.0.0 MAJOR bump: $CURRENT → ${MAJOR_NEW}.0.0"
-                echo "bump=major_blocked" >> "$GITHUB_OUTPUT"
-                echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-                echo "next_version=${MAJOR_NEW}.0.0" >> "$GITHUB_OUTPUT"
-                echo "bump_reason=$BUMP_REASON" >> "$GITHUB_OUTPUT"
-                echo "skip=false" >> "$GITHUB_OUTPUT"
+                {
+                  echo "bump=major_blocked"
+                  echo "current_version=$CURRENT"
+                  echo "next_version=${MAJOR_NEW}.0.0"
+                  echo "bump_reason=$BUMP_REASON"
+                  echo "skip=false"
+                } >> "$GITHUB_OUTPUT"
                 exit 0
               fi ;;
             minor)
@@ -694,12 +699,14 @@ jobs:
             IS_BREAKING="true"
           fi
 
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
-          echo "bump_reason=$BUMP_REASON" >> "$GITHUB_OUTPUT"
-          echo "is_breaking=$IS_BREAKING" >> "$GITHUB_OUTPUT"
+          {
+            echo "skip=false"
+            echo "new_version=$NEW_VERSION"
+            echo "current_version=$CURRENT"
+            echo "bump=$BUMP"
+            echo "bump_reason=$BUMP_REASON"
+            echo "is_breaking=$IS_BREAKING"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Open GitHub Issue for MAJOR bump approval (post-1.0.0)
         if: steps.compute.outputs.bump == 'major_blocked'
@@ -907,8 +914,10 @@ jobs:
             TEXT=":rotating_light: *CRITICAL — semver-agent version-bump dispatch FAILED* | ${{ inputs.repo_name }} v${VERSION} | dispatch to unified-trading-pm returned HTTP ${HTTP_STATUS} after 3 attempts. The PM versions baseline will NOT record ${VERSION} → every future QG-green on main may re-bump (runaway-loop fuel, incident 2026-06-10). Re-dispatch manually + check update-repo-version.yml health. ${RUN_URL}"
             case "${SLACK_WEBHOOK_URL:-}" in
               https://*)
-                curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
-                  --data "$(jq -n --arg t "$TEXT" '{text:$t}')" && echo "CRITICAL page sent to Slack" || true ;;
+                if curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                  --data "$(jq -n --arg t "$TEXT" '{text:$t}')"; then
+                  echo "CRITICAL page sent to Slack"
+                fi ;;
               *) echo "SLACK_CI_WEBHOOK_URL not set/https — cannot page; failing the run loudly instead" ;;
             esac
             # Queue the page for the end-of-job ledger persist (survives the exit 1).
@@ -947,7 +956,11 @@ jobs:
 
           OWNER="${{ github.repository_owner }}"
           VERSION="${{ steps.compute.outputs.new_version }}"
-          DIFF_SUMMARY=$(git diff HEAD~1 --stat -- $SCHEMA_FILES | tail -1)
+          # SCHEMA_FILES is newline-separated (one path per line) -- split into an array so
+          # each path reaches `git diff` as its own pathspec arg, not a single multi-line
+          # word-split string (shellcheck SC2086).
+          mapfile -t SCHEMA_FILES_ARR <<< "$SCHEMA_FILES"
+          DIFF_SUMMARY=$(git diff HEAD~1 --stat -- "${SCHEMA_FILES_ARR[@]}" | tail -1)
 
           # Comma-separate changed file list
           CHANGED_LIST=$(echo "$SCHEMA_FILES" | tr '\n' ',' | sed 's/,$//')
@@ -990,8 +1003,10 @@ jobs:
           # Best-effort -- never fail the run on a missing/misconfigured webhook.
           case "${SLACK_WEBHOOK_URL:-}" in
             https://*)
-              curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
-                --data "$(jq -n --arg t "$TEXT" '{text:$t}')" && echo "Slack notification sent" || true ;;
+              if curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                --data "$(jq -n --arg t "$TEXT" '{text:$t}')"; then
+                echo "Slack notification sent"
+              fi ;;
             *) echo "SLACK_CI_WEBHOOK_URL not set/https -- skipping notification" ;;
           esac
 
