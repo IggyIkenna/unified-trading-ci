@@ -1114,7 +1114,19 @@ jobs:
 
       - name: Record CI status (branch-aware lifecycle)
         id: record_ci_status
-        if: always()
+        # supersede-check guard added 2026-08-09 (unified-api-contracts + e2e-testing false
+        # "CI REGRESSION on main" pages, both traced to the same root cause): this step predates
+        # both the 2026-07-16 supersede-check job AND the 2026-08-02 record-qg-result merge below
+        # it, and was never wired to either — a run cancelled because a newer push already
+        # superseded it (qg-slices.result=cancelled, not the BILLING_KILL both-failed pattern this
+        # step already special-cases) still unconditionally computed PASSED=false and dispatched
+        # STATUS=FAILING, which ci-status-update.yml wrote straight to the Firestore ci_status SSOT
+        # and Slack as a CRITICAL "the promoted line is RED" page — for a tree that was never
+        # broken; the superseding push's own run reported the true (green) status ~30s later,
+        # which is why it "recovered" on its own. Same fix already applied to the two steps
+        # directly below (see their comment) and to notify-qg-fail elsewhere in this file — this
+        # was the one remaining unguarded path to a false regression signal in this job.
+        if: always() && needs.supersede-check.outputs.superseded != 'true'
         shell: bash
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
