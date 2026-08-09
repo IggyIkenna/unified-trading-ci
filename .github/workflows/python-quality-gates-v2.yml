@@ -99,13 +99,18 @@ jobs:
   # the aggregate job ONLY on a full green (all legs pass).
   #
   # CORRECTNESS BOUND: the key is the repo TREE (which INCLUDES pyproject.toml + uv.lock
-  # → the dep RANGE pins). It deliberately does NOT hash the deps' resolved CONTENT, so
-  # it is sound exactly for the redundant-rerun case it targets: the SAME repo tree being
-  # re-gated across push/PR + staging/main promotions, where the deps at each tier are the
-  # same pinned versions. A real code change ⟹ different tree ⟹ MISS ⟹ full run. We never
-  # skip when content differs. (A dep bumping WITHIN range is a separate `chore(deps)` commit
-  # that changes uv.lock ⟹ different tree ⟹ MISS.) And "same tree → same verdict" holds only
-  # while the GATE is unchanged, so the key also pins the gate version (see the hash step).
+  # → the dep RANGE pins) PLUS a DEPENDENCY-CONTENT fingerprint (2026-08-09, operator-approved
+  # Option 2 — see uac_value_only_config_change_breaks_utl_untested_2026_07_20.md item [A]) for
+  # the two deps whose value-only edits have repeatedly broken this class: the CURRENT tree hash
+  # of unified-api-contracts / unified-trading-library at live-defi-rollout HEAD, for whichever of
+  # them this caller actually declares via dep_repos. A real code change in THIS repo ⟹ different
+  # TREE ⟹ MISS ⟹ full run. A dep bumping WITHIN range is a separate `chore(deps)` commit that
+  # changes uv.lock ⟹ different TREE ⟹ MISS too. A value-only UAC/UTL registry/config edit that
+  # stays within range ⟹ TREE unchanged, but the dep's live-defi-rollout tree hash now differs ⟹
+  # MISS ⟹ full run — this is the gap this fingerprint closes; before it, that case skipped
+  # (stale-GREEN). We never skip when either fingerprint differs. And "same key → same verdict"
+  # holds only while the GATE is unchanged, so the key also pins the gate version (see the hash
+  # step).
   #
   # FAIL-SAFE: ANY probe problem (no GCP_SA_KEY — e.g. a forked PR, Firestore unreachable,
   # gate-version fingerprint unresolvable) is a MISS ⟹ the FULL gate runs. The short-circuit
@@ -124,8 +129,10 @@ jobs:
       # 'true' when this exact tree-content already passed v2 under this exact gate version.
       cache_hit: ${{ steps.probe.outputs.cache-hit }}
       cache_key: ${{ steps.hash.outputs.cache_key }}
-      # 'true' only when the gate-version fingerprint fully resolved. When 'false' the key is
-      # incomplete → the probe is forced MISS and the aggregate job MUST NOT save a marker.
+      # 'true' only when BOTH the gate-version fingerprint AND (for a caller that declares
+      # UAC/UTL via dep_repos) the dependency-content fingerprint fully resolved. When 'false'
+      # the key is incomplete → the probe is forced MISS and the aggregate job MUST NOT save a
+      # marker.
       gate_known: ${{ steps.hash.outputs.gate_known }}
     steps:
       - name: Checkout
@@ -137,6 +144,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          DEP_REPOS: ${{ inputs.dep_repos }}
+          SELF_REPO: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
           TREE="$(git rev-parse 'HEAD^{tree}')"
@@ -169,10 +178,42 @@ jobs:
             echo "::warning::gate-version fingerprint incomplete (reusable='${REUSABLE_SHA:-none}' base='${BASE_SHAS:-none}') — dedup disabled this run (fail-safe: full gate, no marker saved)."
           fi
           GATE_HASH="$(printf '%s' "${WF_HASH}|${REUSABLE_SHA}|${BASE_SHAS}" | sha256sum | awk '{print $1}' | cut -c1-24)"
-          KEY="qg-green-v2-${GITHUB_REPOSITORY//\//_}-${TREE}-${GATE_HASH}"
+          # DEPENDENCY-CONTENT fingerprint (2026-08-09, operator-approved Option 2 —
+          # plans/active/issues/uac_value_only_config_change_breaks_utl_untested_2026_07_20.md
+          # item [A]). TREE above is scoped to THIS repo only, so a value-only edit to a
+          # dependency's registry/config (UAC's SOURCE_PRIORITY, cloud-providers.yaml, …) that
+          # stays within this repo's pinned RANGE leaves TREE byte-identical ⟹ stale-GREEN skip
+          # even though the resolved runtime behaviour changed (verified live: 2+ instances, 9h
+          # undetected red). Fold in the CURRENT git tree hash of unified-api-contracts /
+          # unified-trading-library at their live-defi-rollout HEAD — exactly what "Clone
+          # unified-trading-pm and dependencies" below actually installs (CONTENT-FIRST: clones
+          # the dep's live-defi-rollout HEAD, not a pinned tag) — via the commits API, whose
+          # `.commit.tree.sha` is the exact `git rev-parse <ref>^{tree}` equivalent for the WHOLE
+          # dependency repo (same pattern already proven above for REUSABLE_SHA, one file). Scoped
+          # to only the deps THIS caller actually declares via dep_repos (a repo that doesn't
+          # depend on UAC/UTL contributes nothing here) and skips self-reference (UAC/UTL's own
+          # gate runs don't hash themselves). Unresolvable ⟹ GATE_KNOWN=false, same fail-safe as
+          # the gate-version fingerprint above (full gate, no marker saved) — can only cost a
+          # missed dedup, never a false HIT.
+          DEP_HASH_PARTS=""
+          for _dep in unified-api-contracts unified-trading-library; do
+            case " ${DEP_REPOS} " in
+              *" ${_dep} "*)
+                [ "${_dep}" = "${SELF_REPO}" ] && continue
+                _dep_tree="$(gh api "repos/${GITHUB_REPOSITORY_OWNER}/${_dep}/commits/live-defi-rollout" --jq '.commit.tree.sha' 2>/dev/null || echo "")"
+                if [ -z "${_dep_tree}" ]; then
+                  GATE_KNOWN=false
+                  echo "::warning::could not resolve ${_dep}'s live-defi-rollout tree hash — dependency-content key incomplete (dedup disabled this run)."
+                fi
+                DEP_HASH_PARTS="${DEP_HASH_PARTS}${_dep}=${_dep_tree};"
+                ;;
+            esac
+          done
+          DEP_HASH="$(printf '%s' "${DEP_HASH_PARTS}" | sha256sum | awk '{print $1}' | cut -c1-24)"
+          KEY="qg-green-v2-${GITHUB_REPOSITORY//\//_}-${TREE}-${DEP_HASH}-${GATE_HASH}"
           echo "cache_key=${KEY}" >> "$GITHUB_OUTPUT"
           echo "gate_known=${GATE_KNOWN}" >> "$GITHUB_OUTPUT"
-          echo "content cache key: ${KEY} (reusable@${REUSABLE_REF}=${REUSABLE_SHA:-?} gate_known=${GATE_KNOWN})"
+          echo "content cache key: ${KEY} (reusable@${REUSABLE_REF}=${REUSABLE_SHA:-?} dep_hash_parts=${DEP_HASH_PARTS:-none} gate_known=${GATE_KNOWN})"
       - name: Authenticate to GCP (marker probe)
         # Fails harmlessly when GCP_SA_KEY is absent/invalid (forked PRs, unseeded repos):
         # continue-on-error → empty token → the probe below treats it as a MISS.
