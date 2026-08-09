@@ -87,11 +87,13 @@ jobs:
           # dependency_promotion_range_pins_and_major_bump_sit_2026_06_09.md.
           if [ "$BUMP_TYPE" != "major" ] && [ "$IS_BREAKING" != "true" ]; then
             echo "Non-breaking minor/patch internal bump ($DEP_NAME -> $DEP_VERSION): digest-only (range absorbs it; pull-not-push). Skipping pyproject floor rewrite + uv lock."
-            echo "dep_name=$DEP_NAME" >> "$GITHUB_OUTPUT"
-            echo "dep_version=$DEP_VERSION" >> "$GITHUB_OUTPUT"
-            echo "bump_type=$BUMP_TYPE" >> "$GITHUB_OUTPUT"
-            echo "is_breaking=$IS_BREAKING" >> "$GITHUB_OUTPUT"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "dep_name=$DEP_NAME"
+              echo "dep_version=$DEP_VERSION"
+              echo "bump_type=$BUMP_TYPE"
+              echo "is_breaking=$IS_BREAKING"
+              echo "skip=true"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -114,9 +116,11 @@ jobs:
           if [ -n "$CAP" ]; then
             echo "Dependency cap active: $REPO_NAME pins $DEP_NAME to $CAP -- skipping constraint update to $CONSTRAINT"
             echo "Remove dependency_caps.$DEP_NAME from $REPO_NAME in workspace-manifest.json to unpin."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "capped=true" >> "$GITHUB_OUTPUT"
-            echo "cap_constraint=$CAP" >> "$GITHUB_OUTPUT"
+            {
+              echo "skip=true"
+              echo "capped=true"
+              echo "cap_constraint=$CAP"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -150,11 +154,13 @@ jobs:
             echo "WARN: uv not on PATH — skipping uv lock (uv.lock may drift)"
           fi
 
-          echo "dep_name=$DEP_NAME" >> "$GITHUB_OUTPUT"
-          echo "dep_version=$DEP_VERSION" >> "$GITHUB_OUTPUT"
-          echo "bump_type=$BUMP_TYPE" >> "$GITHUB_OUTPUT"
-          echo "is_breaking=$IS_BREAKING" >> "$GITHUB_OUTPUT"
-          echo "skip=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "dep_name=$DEP_NAME"
+            echo "dep_version=$DEP_VERSION"
+            echo "bump_type=$BUMP_TYPE"
+            echo "is_breaking=$IS_BREAKING"
+            echo "skip=false"
+          } >> "$GITHUB_OUTPUT"
 
       # FROM-digest ratchet (QG STEP 5.79): when the dispatch carries base_image_digest
       # (the freshly-republished UTL base image), rewrite the checked-in
@@ -316,8 +322,10 @@ jobs:
           # Best-effort -- never fail the run on a missing/misconfigured webhook.
           case "${SLACK_WEBHOOK_URL:-}" in
             https://*)
-              curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
-                --data "$(jq -n --arg t "$MSG" '{text:$t}')" && echo "Slack failure alert sent" || true ;;
+              if curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                --data "$(jq -n --arg t "$MSG" '{text:$t}')"; then
+                echo "Slack failure alert sent"
+              fi ;;
             *) echo "SLACK_CI_WEBHOOK_URL not set/https -- skipping notification" ;;
           esac
 
