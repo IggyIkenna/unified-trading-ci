@@ -581,12 +581,22 @@ jobs:
           # YAML comment above the step name, NOT here — see 2026-08-07/08 "Exceeded max
           # expression length 21000" note for why: this run: block has a hard ~21000-char
           # ceiling and a long in-script comment already blew through it fleet-wide, twice).
+          #
+          # source_touched (2026-08-09, replaces the old SOURCE_DIR-prefix grep): the prior
+          # check only counted files under the literal --source-dir convention
+          # (<repo>-name -> <repo>_name), which does not hold for every repo — e2e-testing's
+          # real content lives under scripts/ and tests/, not an e2e_testing/ package dir, so
+          # its SOURCE_TOUCHED was always 0 regardless of how much real work landed, and it
+          # silently never released again (measured: 64 unreleased commits, 14.5d stale tag).
+          # $SURFACE already carries detect_breaking_change.py's repo-wide, denylist-based
+          # source_touched field (computed in the SAME differ call above — no extra
+          # subprocess) — reuse it instead of re-deriving a second, narrower notion of "did
+          # anything change" that can silently diverge from the one reconcile_release_tags.py
+          # (the fleet stall-detector) keys off of.
           if [ -z "$BUMP" ]; then
-            SOURCE_TOUCHED=$(echo "$CHANGED_FILES" | grep -c "^${SOURCE_DIR}/" || true)
-            SOURCE_TOUCHED="${SOURCE_TOUCHED:-0}"
-            if [ "$SOURCE_TOUCHED" -gt 0 ]; then
+            if echo "$SURFACE" | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('source_touched') else 1)" 2>/dev/null; then
               BUMP="patch"
-              echo "No feat:/fix:/breaking commit labels visible (squash-promote) and no net-new export, but ${SOURCE_TOUCHED} file(s) under ${SOURCE_DIR}/ changed since baseline → defaulting to PATCH (internal change)."
+              echo "No feat:/fix:/breaking commit labels visible (squash-promote) and no net-new export, but a non-metadata file changed since baseline (source_touched=true) → defaulting to PATCH (internal change)."
             fi
           fi
 
