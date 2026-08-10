@@ -766,6 +766,32 @@ jobs:
             uv pip show "$dep" >/dev/null 2>&1 || echo "::warning::workspace dep '$dep' not resolved in .venv after install — basedpyright may Unknown-cascade (check .venv targeting, base-service.sh:316-327)."
           done
 
+      # Dashboard node deps (repos with a dashboard/ dir). quality-gates.sh FAILS CLOSED
+      # (2026-08-10, agent-orchestrator@8f1a08a) when dashboard/package.json exists but
+      # dashboard/node_modules is absent — a gate that cannot resolve its UI toolchain has not
+      # verified the UI. This step makes the fail-closed guard SATISFIABLE in CI: provision the
+      # dashboard's node deps so tsc + vitest actually run. Gated on dashboard/package.json so
+      # the ~25 python-only repos skip it entirely (only agent-orchestrator carries a dashboard
+      # today). Mirrors the proven setup-node + npm ci pattern in agent-orchestrator's own
+      # deploy-dashboard.yml (same node-version + npm cache keyed on the dashboard lock).
+      - name: Set up Node (dashboard repos)
+        if: steps.vcheck.outputs.skip_slice != 'true' && env.QG_CONTENT_HIT != 'true' && hashFiles('dashboard/package.json') != ''
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dashboard deps
+        if: steps.vcheck.outputs.skip_slice != 'true' && env.QG_CONTENT_HIT != 'true' && hashFiles('dashboard/package.json') != ''
+        working-directory: dashboard
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
       - name: Run quality gates (leg ${{ matrix.slice }})
         id: gate
         if: steps.vcheck.outputs.skip_slice != 'true' && env.QG_CONTENT_HIT != 'true'
