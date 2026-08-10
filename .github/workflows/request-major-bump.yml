@@ -85,10 +85,12 @@ jobs:
             exit 1
           fi
 
-          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "proposed=$PROPOSED" >> "$GITHUB_OUTPUT"
-          echo "requester=$REQUESTER" >> "$GITHUB_OUTPUT"
-          echo "repo=$REPO_NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo "current=$CURRENT"
+            echo "proposed=$PROPOSED"
+            echo "requester=$REQUESTER"
+            echo "repo=$REPO_NAME"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Issue for approval
         id: create-issue
@@ -193,17 +195,19 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## Major Bump Request Created" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Repo | \`${{ steps.validate.outputs.repo }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Current version | \`${{ steps.validate.outputs.current }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Proposed version | \`${{ steps.validate.outputs.proposed }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Requested by | @${{ steps.validate.outputs.requester }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Issue | ${{ steps.create-issue.outputs.issue_url }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Next step: Comment /approve on the issue to proceed with the version bump." >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Major Bump Request Created"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Repo | \`${{ steps.validate.outputs.repo }}\` |"
+            echo "| Current version | \`${{ steps.validate.outputs.current }}\` |"
+            echo "| Proposed version | \`${{ steps.validate.outputs.proposed }}\` |"
+            echo "| Requested by | @${{ steps.validate.outputs.requester }} |"
+            echo "| Issue | ${{ steps.create-issue.outputs.issue_url }} |"
+            echo ""
+            echo "Next step: Comment /approve on the issue to proceed with the version bump."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   notify-failure:
     name: Slack — Major Bump Request Failure
@@ -220,8 +224,10 @@ jobs:
           # Best-effort -- never fail the run on a missing/misconfigured webhook.
           case "${SLACK_WEBHOOK_URL:-}" in
             https://*)
-              curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
-                --data "$(jq -n --arg t "$MSG" '{text:$t}')" && echo "Slack failure alert sent" || true ;;
+              if curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                --data "$(jq -n --arg t "$MSG" '{text:$t}')"; then
+                echo "Slack failure alert sent"
+              fi ;;
             *) echo "SLACK_CI_WEBHOOK_URL not set/https -- skipping notification" ;;
           esac
 
