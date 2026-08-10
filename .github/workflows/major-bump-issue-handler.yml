@@ -128,10 +128,12 @@ jobs:
             exit 1
           fi
 
-          echo "repo=$REPO" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+          {
+            echo "repo=$REPO"
+            echo "version=$VERSION"
+            echo "current=$CURRENT"
+            echo "reason=$REASON"
+          } >> "$GITHUB_OUTPUT"
           echo "Parsed: repo=$REPO version=$VERSION current=$CURRENT"
 
       - name: Bump pyproject.toml on live-defi-rollout
@@ -239,8 +241,11 @@ jobs:
           # Best-effort -- never fail the run on a missing/misconfigured webhook.
           case "${SLACK_WEBHOOK_URL:-}" in
             https://*)
-              curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
-                --data "$(jq -n --arg t "$MSG" '{text:$t}')" && echo "Slack notification sent" || true ;;
+              if curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                --data "$(jq -n --arg t "$MSG" '{text:$t}')"; then
+                echo "Slack notification sent"
+              fi
+              ;;
             *) echo "SLACK_CI_WEBHOOK_URL not set/https -- skipping notification" ;;
           esac
 
@@ -313,8 +318,11 @@ jobs:
           # Best-effort -- never fail the run on a missing/misconfigured webhook.
           case "${SLACK_WEBHOOK_URL:-}" in
             https://*)
-              curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
-                --data "$(jq -n --arg t "$MSG" '{text:$t}')" && echo "Slack failure alert sent" || true ;;
+              if curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                --data "$(jq -n --arg t "$MSG" '{text:$t}')"; then
+                echo "Slack failure alert sent"
+              fi
+              ;;
             *) echo "SLACK_CI_WEBHOOK_URL not set/https -- skipping notification" ;;
           esac
 
