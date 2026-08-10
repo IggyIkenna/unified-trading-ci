@@ -41,8 +41,7 @@ on:
         type: string
         default: "3.13.9"
       dep_repos:
-        description:
-          Space-separated list of sibling repos to clone (e.g. "unified-trading-library unified-api-contracts")
+        description: Space-separated list of sibling repos to clone (e.g. "unified-trading-library unified-api-contracts")
         type: string
         default: ""
       self_hosted_runner_labels:
@@ -56,8 +55,7 @@ on:
         default: ""
     outputs:
       metadata_only:
-        description:
-          "true when this run fast-pathed a metadata-only commit (chore(release) version bump OR chore(deps) pin)"
+        description: "true when this run fast-pathed a metadata-only commit (chore(release) version bump OR chore(deps) pin)"
         value: ${{ jobs.quality-gates-v2.outputs.metadata_only }}
       docs_only:
         description:
@@ -285,8 +283,7 @@ jobs:
         slice: [tests, checks]
     # Empty (default) -> ubuntu-latest, byte-identical to before this input existed. Non-empty only
     # for a canaried caller passing self_hosted_runner_labels (see the input's own doc above).
-    runs-on:
-      ${{ inputs.self_hosted_runner_labels != '' && fromJSON(inputs.self_hosted_runner_labels) || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.self_hosted_runner_labels != '' && fromJSON(inputs.self_hosted_runner_labels) || 'ubuntu-latest' }}
     # 135m covers the slowest repo's tests leg + margin; the non-tests legs finish
     # far sooner. A hung/runaway leg is killed cleanly (failure()||cancelled() notify fires).
     timeout-minutes: 135
@@ -839,8 +836,7 @@ jobs:
             exit 1
           fi
 
-      - name:
-          Plan hygiene hard gate (PM only — folds run_hygiene_sweep.sh into v2, RULE-11 successor to plan-health-gate)
+      - name: Plan hygiene hard gate (PM only — folds run_hygiene_sweep.sh into v2, RULE-11 successor to plan-health-gate)
         # PM-only: run_hygiene_sweep.sh + plans/codex/ exist only in unified-trading-pm. Lives on
         # the `checks` leg alongside lint-codex (which validates VALUE-level frontmatter schema
         # fleet-wide; this validates PM's plan/epic STRUCTURE — todo-format, line-caps,

@@ -1,0 +1,97 @@
+# Canonical pre-commit config for CI workflow repos (YAML-only, no Python).
+# Template SSOT: unified-trading-pm/scripts/pre-commit-templates/
+# Rollout: bash unified-trading-pm/scripts/propagation/rollout-pre-commit-configs.sh
+# Setup: pre-commit install --install-hooks
+
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+  # NEVER add pre-push here — .git/hooks/pre-push is the strict-quickmerge guard, not prek's.
+
+repos:
+  # Conventional commit validation (feat:/fix:/chore:/docs:/refactor:/test:/ci:)
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.2.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+
+  # Quickmerge-provenance gate — the commit-TIME half of check_strict_quickmerge.py's
+  # pre-push carve-out logic. A raw `git commit` of a source file with no `Quickmerge:`
+  # trailer was previously only caught at PUSH time — this catches it before that window
+  # opens. WARN-only until QUICKMERGE_PROVENANCE_BLOCK=1 is set fleet-wide.
+  - repo: local
+    hooks:
+      - id: check-quickmerge-provenance
+        name: Quickmerge provenance (source commits need the Quickmerge trailer)
+        entry:
+          bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
+          pwd)}/unified-trading-pm/scripts/hooks/check-quickmerge-provenance.sh"; [ -f "$HOOK" ] || exit 0; bash "$HOOK"
+          "$@"' --
+        language: system
+        stages: [commit-msg]
+
+  # Branch drift check - blocks commit if you're behind origin
+  - repo: local
+    hooks:
+      - id: fix-commit-identity
+        name: Enforce slot·host commit identity
+        entry:
+          bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
+          pwd)}/unified-trading-pm/scripts/hooks/fix-commit-identity.sh"; [ -f "$HOOK" ] || exit 0; bash "$HOOK"'
+        language: system
+        always_run: true
+        pass_filenames: false
+        fail_fast: true # wrong identity -> STOP + re-run (git resolves author BEFORE hooks)
+
+  - repo: local
+    hooks:
+      - id: check-branch-drift
+        name: Check branch drift (are you behind origin?)
+        entry:
+          bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
+          pwd)}/unified-trading-pm/scripts/hooks/check-branch-drift.sh"; [ -f "$HOOK" ] || exit 0; bash "$HOOK"'
+        language: system
+        always_run: true
+        pass_filenames: false
+        fail_fast: true # behind-origin -> STOP before any formatter mutates (no reflow residue that breaks slot FF-sync)
+
+  # Prettier - TypeScript/JSON/Markdown/YAML formatter (auto-stage wrapper).
+  # Wrapper replaces upstream mirrors-prettier because that hook aborts the commit
+  # when it reformats anything, forcing a manual re-stage + re-commit loop. The
+  # wrapper runs prettier --write then re-stages the SUBSET of input files that
+  # were already in the index (never touches foreign-dirty files held by other
+  # parallel slots). SSOT: scripts/hooks/prettier-autostage.sh.
+  - repo: local
+    hooks:
+      - id: prettier-autostage
+        name: Format with Prettier (auto-stage)
+        entry:
+          bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
+          pwd)}/unified-trading-pm/scripts/hooks/prettier-autostage.sh"; [ -f "$HOOK" ] || exit 0; bash "$HOOK" "$@"' --
+        language: system
+        types_or: [yaml, markdown, json]
+        require_serial: true
+
+  # Secret scanning — gitleaks (catches GCP SA keys, GitHub PATs, API keys)
+  # Config SSOT: unified-trading-pm/.gitleaks.toml (propagated here at rollout)
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.27.2
+    hooks:
+      - id: gitleaks
+        name: Detect secrets with gitleaks
+        args: ["--config", ".gitleaks.toml"]
+
+  # Basic file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending

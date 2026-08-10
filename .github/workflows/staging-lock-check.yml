@@ -93,4 +93,3 @@ jobs:
               echo "PR #${PR}: no failed lock-check run to refresh"
             fi
           done
-
