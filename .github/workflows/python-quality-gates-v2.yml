@@ -41,8 +41,7 @@ on:
         type: string
         default: "3.13.9"
       dep_repos:
-        description:
-          Space-separated list of sibling repos to clone (e.g. "unified-trading-library unified-api-contracts")
+        description: Space-separated list of sibling repos to clone (e.g. "unified-trading-library unified-api-contracts")
         type: string
         default: ""
       self_hosted_runner_labels:
@@ -56,8 +55,7 @@ on:
         default: ""
     outputs:
       metadata_only:
-        description:
-          "true when this run fast-pathed a metadata-only commit (chore(release) version bump OR chore(deps) pin)"
+        description: "true when this run fast-pathed a metadata-only commit (chore(release) version bump OR chore(deps) pin)"
         value: ${{ jobs.quality-gates-v2.outputs.metadata_only }}
       docs_only:
         description:
@@ -87,39 +85,36 @@ on:
 
 jobs:
   # ── CONTENT-SENTINEL GATE (redundant-rerun short-circuit, 2026-06-10; Firestore 2026-07-17) ──
-  # v2 fires on BOTH push AND pull_request to main+staging, so ONE change runs the
-  # full gate up to 4× on BYTE-IDENTICAL content (PR-v2 then post-merge-push-v2, at
-  # each of staging + main — a promote re-SHAs the commit but the TREE content is
-  # unchanged). This job computes the git TREE hash (content-addressed → survives
-  # squash/promote re-SHA, unlike the commit SHA) keyed with the GATE-VERSION
-  # fingerprint, and looks it up in Firestore (`qg_green_markers/{key}`). A HIT ⟹
-  # quality-gates-v2 ALREADY passed for this exact tree content under this exact gate
-  # → short-circuit: the matrix legs skip their gate work (report GREEN in seconds)
-  # and the required context still reports (PR not BLOCKED). The marker is written by
-  # the aggregate job ONLY on a full green (all legs pass).
+  # v2 fires on BOTH push AND pull_request to main+staging, so ONE change runs the full gate up to
+  # 4× on BYTE-IDENTICAL content (PR-v2 then post-merge-push-v2 at each of staging + main — a
+  # promote re-SHAs the commit but the TREE content is unchanged). This job computes the git TREE
+  # hash (content-addressed → survives squash/promote re-SHA, unlike the commit SHA) keyed with the
+  # GATE-VERSION fingerprint, and looks it up in Firestore (`qg_green_markers/{key}`). A HIT ⟹
+  # quality-gates-v2 ALREADY passed for this exact tree content under this exact gate → short-
+  # circuit: the matrix legs skip their gate work (report GREEN in seconds) and the required
+  # context still reports (PR not BLOCKED). The marker is written by the aggregate job ONLY on a
+  # full green (all legs pass).
   #
-  # CORRECTNESS BOUND: the key is the repo TREE (which INCLUDES pyproject.toml + uv.lock
-  # → the dep RANGE pins) PLUS a DEPENDENCY-CONTENT fingerprint (2026-08-09, operator-approved
-  # Option 2 — see uac_value_only_config_change_breaks_utl_untested_2026_07_20.md item [A]) for
-  # the two deps whose value-only edits have repeatedly broken this class: the CURRENT tree hash
-  # of unified-api-contracts / unified-trading-library at live-defi-rollout HEAD, for whichever of
-  # them this caller actually declares via dep_repos. A real code change in THIS repo ⟹ different
-  # TREE ⟹ MISS ⟹ full run. A dep bumping WITHIN range is a separate `chore(deps)` commit that
-  # changes uv.lock ⟹ different TREE ⟹ MISS too. A value-only UAC/UTL registry/config edit that
-  # stays within range ⟹ TREE unchanged, but the dep's live-defi-rollout tree hash now differs ⟹
-  # MISS ⟹ full run — this is the gap this fingerprint closes; before it, that case skipped
-  # (stale-GREEN). We never skip when either fingerprint differs. And "same key → same verdict"
-  # holds only while the GATE is unchanged, so the key also pins the gate version (see the hash
-  # step).
+  # CORRECTNESS BOUND: the key is the repo TREE (which INCLUDES pyproject.toml + uv.lock → the dep
+  # RANGE pins) PLUS a DEPENDENCY-CONTENT fingerprint (2026-08-09, operator-approved Option 2 — see
+  # uac_value_only_config_change_breaks_utl_untested_2026_07_20.md item [A]) for the two deps whose
+  # value-only edits have repeatedly broken this class: the CURRENT tree hash of unified-api-
+  # contracts / unified-trading-library at live-defi-rollout HEAD, for whichever of them this caller
+  # actually declares via dep_repos. A real code change in THIS repo ⟹ different TREE ⟹ MISS ⟹
+  # full run. A dep bumping WITHIN range is a separate `chore(deps)` commit that changes uv.lock ⟹
+  # different TREE ⟹ MISS too. A value-only UAC/UTL registry/config edit that stays within range
+  # ⟹ TREE unchanged, but the dep's live-defi-rollout tree hash now differs ⟹ MISS ⟹ full run —
+  # this is the gap this fingerprint closes; before it, that case skipped (stale-GREEN). We never
+  # skip when either fingerprint differs, and "same key → same verdict" holds only while the GATE
+  # is unchanged, so the key also pins the gate version (see the hash step).
   #
-  # FAIL-SAFE: ANY probe problem (no GCP_SA_KEY — e.g. a forked PR, Firestore unreachable,
-  # gate-version fingerprint unresolvable) is a MISS ⟹ the FULL gate runs. The short-circuit
-  # can NEVER produce a false green or a blocked PR — worst case is "no speedup". Firestore
-  # (unlike the GHA cache this replaced — broken for PR/dispatch events in reusable-workflow
-  # context since ~2026-06-26, and branch-scoped even when it worked) has no branch scoping:
-  # once a tree+gate is green ANYWHERE it hits everywhere, which is sound because the key
-  # pins both the exact content and the exact gate. SSOT:
-  # plans/active/cicd_v2_latency_reduction_2026_06_10.md Phase 3 +
+  # FAIL-SAFE: ANY probe problem (no GCP_SA_KEY — e.g. a forked PR, Firestore unreachable, gate-
+  # version fingerprint unresolvable) is a MISS ⟹ the FULL gate runs. The short-circuit can NEVER
+  # produce a false green or a blocked PR — worst case is "no speedup". Firestore (unlike the GHA
+  # cache this replaced — broken for PR/dispatch events in reusable-workflow context since ~2026-06-
+  # 26, and branch-scoped even when it worked) has no branch scoping: once a tree+gate is green
+  # ANYWHERE it hits everywhere, which is sound because the key pins both the exact content and the
+  # exact gate. SSOT: plans/active/cicd_v2_latency_reduction_2026_06_10.md Phase 3 +
   # plans/active/github_actions_ci_cost_reduction_2026_07_15.md A2.
   content-gate:
     name: content sentinel
@@ -285,8 +280,7 @@ jobs:
         slice: [tests, checks]
     # Empty (default) -> ubuntu-latest, byte-identical to before this input existed. Non-empty only
     # for a canaried caller passing self_hosted_runner_labels (see the input's own doc above).
-    runs-on:
-      ${{ inputs.self_hosted_runner_labels != '' && fromJSON(inputs.self_hosted_runner_labels) || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.self_hosted_runner_labels != '' && fromJSON(inputs.self_hosted_runner_labels) || 'ubuntu-latest' }}
     # 135m covers the slowest repo's tests leg + margin; the non-tests legs finish
     # far sooner. A hung/runaway leg is killed cleanly (failure()||cancelled() notify fires).
     timeout-minutes: 135
@@ -839,8 +833,7 @@ jobs:
             exit 1
           fi
 
-      - name:
-          Plan hygiene hard gate (PM only — folds run_hygiene_sweep.sh into v2, RULE-11 successor to plan-health-gate)
+      - name: Plan hygiene hard gate (PM only — folds run_hygiene_sweep.sh into v2, RULE-11 successor to plan-health-gate)
         # PM-only: run_hygiene_sweep.sh + plans/codex/ exist only in unified-trading-pm. Lives on
         # the `checks` leg alongside lint-codex (which validates VALUE-level frontmatter schema
         # fleet-wide; this validates PM's plan/epic STRUCTURE — todo-format, line-caps,

@@ -429,4 +429,3 @@ jobs:
     secrets:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL }}
       GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
-

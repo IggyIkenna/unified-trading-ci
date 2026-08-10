@@ -328,4 +328,3 @@ jobs:
               fi ;;
             *) echo "SLACK_CI_WEBHOOK_URL not set/https -- skipping notification" ;;
           esac
-

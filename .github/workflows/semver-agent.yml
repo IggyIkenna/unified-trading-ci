@@ -23,7 +23,7 @@ on:
         type: string
         required: true
       source_dir:
-        description: 'Underscore form of repo_name (e.g. market_tick_data_service).'
+        description: "Underscore form of repo_name (e.g. market_tick_data_service)."
         type: string
         required: true
       version_source:
@@ -253,78 +253,78 @@ jobs:
       # carries a one-line pointer back to its entry here.
       #
       # [HEAD-commit re-entry brake]
-          # ── HEAD-commit re-entry brake (semver_version_bump_skip_ci_promotion_block §15 P1) ──
-          # If the commit that triggered this run is ITSELF a semver-agent release bump,
-          # the run was fired by our own previous bump → re-bumping on top of it is the
-          # runaway re-bump loop. Skip immediately — independent of the bump-rate circuit
-          # breaker above (which only CAPS a runaway at ≥3/hr, never prevents it at source).
-          # Reuses the existing `skip` output that gates every downstream step.
+      # ── HEAD-commit re-entry brake (semver_version_bump_skip_ci_promotion_block §15 P1) ──
+      # If the commit that triggered this run is ITSELF a semver-agent release bump,
+      # the run was fired by our own previous bump → re-bumping on top of it is the
+      # runaway re-bump loop. Skip immediately — independent of the bump-rate circuit
+      # breaker above (which only CAPS a runaway at ≥3/hr, never prevents it at source).
+      # Reuses the existing `skip` output that gates every downstream step.
       #
       # [Step 1 baseline-source rationale]
-          # ── Step 1: Determine the last-released baseline version ──
-          # git-tag repos: the latest v* TAG is the authoritative last-released version —
-          # self-contained, immune to PM-manifest staleness (the dormant staging_versions
-          # map is frozen post-cutover; e.g. UTL read 0.43.0 there vs a live 0.56.0 tag,
-          # which would have scanned ~13 versions of ancient history → a spurious breaking/
-          # minor over-bump, exactly the 2026-06-09 cascade class). Legacy repos: read the
-          # stable `versions` map from PM's workspace-manifest.json — the map that
-          # update-repo-version.yml writes on the branch=main dispatch this workflow now sends.
+      # ── Step 1: Determine the last-released baseline version ──
+      # git-tag repos: the latest v* TAG is the authoritative last-released version —
+      # self-contained, immune to PM-manifest staleness (the dormant staging_versions
+      # map is frozen post-cutover; e.g. UTL read 0.43.0 there vs a live 0.56.0 tag,
+      # which would have scanned ~13 versions of ancient history → a spurious breaking/
+      # minor over-bump, exactly the 2026-06-09 cascade class). Legacy repos: read the
+      # stable `versions` map from PM's workspace-manifest.json — the map that
+      # update-repo-version.yml writes on the branch=main dispatch this workflow now sends.
       #
       # [0.0.0 baseline bounded-scan rationale]
-            # BASELINE=0.0.0 is USUALLY SPURIOUS, not a genuine first release: the manifest
-            # staging_versions entry can read 0.0.0/missing for a repo that HAS released (e.g. a
-            # staging merge-sync bumped before the manifest had a baseline — incident 2026-06-09,
-            # deployment-api=0.3.0). Scanning ALL history then catches an ancient `feat!:` → BUMP=breaking
-            # → spurious fleet-locking cascade (the differ is skipped once BUMP=breaking). So bound the
-            # scan the SAME way as the unresolvable-baseline fail-safe below: to the most recent
-            # release/version commit reachable from HEAD. Only if NONE exists is this a genuine first
-            # release → then all-history is correct (no prior release to bound to; the 0.0.0 first-bump
-            # rule governs the version anyway). Closes the 0.0.0-branch gap in the 2026-06-09 bounded-scan fix.
+      # BASELINE=0.0.0 is USUALLY SPURIOUS, not a genuine first release: the manifest
+      # staging_versions entry can read 0.0.0/missing for a repo that HAS released (e.g. a
+      # staging merge-sync bumped before the manifest had a baseline — incident 2026-06-09,
+      # deployment-api=0.3.0). Scanning ALL history then catches an ancient `feat!:` → BUMP=breaking
+      # → spurious fleet-locking cascade (the differ is skipped once BUMP=breaking). So bound the
+      # scan the SAME way as the unresolvable-baseline fail-safe below: to the most recent
+      # release/version commit reachable from HEAD. Only if NONE exists is this a genuine first
+      # release → then all-history is correct (no prior release to bound to; the 0.0.0 first-bump
+      # rule governs the version anyway). Closes the 0.0.0-branch gap in the 2026-06-09 bounded-scan fix.
       #
       # [Robust baseline-commit resolution rationale]
-            # Resolve the baseline-version commit ROBUSTLY (incident 2026-06-09): UAC 0.3.0 was set by an
-            # admin `chore(version): align ... to 0.3.0` commit, NOT a `bump version to 0.3.0` message, so the
-            # message grep MISSED it and fell back to scanning ALL history → an ancient `feat!:` in history
-            # flipped BUMP=breaking (the differ is skipped once BUMP=breaking) → a SPURIOUS staging-lock
-            # cascade fleet-wide. Fix: pickaxe the authoritative, message-agnostic signal — the
-            # `version = "X"` string in pyproject.toml — HEAD-ancestry ONLY (never `--all`, which can match a
-            # divergent branch's release commit and poison both the label scan and the differ base). Keep the
-            # message grep as a secondary, also HEAD-ancestry.
+      # Resolve the baseline-version commit ROBUSTLY (incident 2026-06-09): UAC 0.3.0 was set by an
+      # admin `chore(version): align ... to 0.3.0` commit, NOT a `bump version to 0.3.0` message, so the
+      # message grep MISSED it and fell back to scanning ALL history → an ancient `feat!:` in history
+      # flipped BUMP=breaking (the differ is skipped once BUMP=breaking) → a SPURIOUS staging-lock
+      # cascade fleet-wide. Fix: pickaxe the authoritative, message-agnostic signal — the
+      # `version = "X"` string in pyproject.toml — HEAD-ancestry ONLY (never `--all`, which can match a
+      # divergent branch's release commit and poison both the label scan and the differ base). Keep the
+      # message grep as a secondary, also HEAD-ancestry.
       #
       # [Unresolvable-baseline fail-safe rationale]
-              # FAIL-SAFE (incident 2026-06-09): baseline commit unresolvable → do NOT scan ALL history (it
-              # catches ancient `feat!:` commits → spurious breaking + poisons the differ base). Bound to the
-              # most recent release/version commit reachable from HEAD; if none, the last commit only. Erring
-              # toward a BOUNDED scan is safe — at worst we under-bump (caught at the next promote), never a
-              # spurious fleet-locking breaking verdict off unrelated ancient history.
+      # FAIL-SAFE (incident 2026-06-09): baseline commit unresolvable → do NOT scan ALL history (it
+      # catches ancient `feat!:` commits → spurious breaking + poisons the differ base). Bound to the
+      # most recent release/version commit reachable from HEAD; if none, the last commit only. Erring
+      # toward a BOUNDED scan is safe — at worst we under-bump (caught at the next promote), never a
+      # spurious fleet-locking breaking verdict off unrelated ancient history.
       #
       # [Baseline-reuse-for-diff rationale]
-            # Reuse the baseline commit resolved robustly in Step 2 (same run-block scope) — pickaxe on the
-            # `version = "X"` pyproject string, HEAD-ancestry, with a bounded fail-safe — instead of the old
-            # `git log --all | grep "bump version to ${BASELINE}"` which missed admin-set versions and poisoned
-            # the differ base with a cross-branch commit (incident 2026-06-09 spurious-cascade root cause).
+      # Reuse the baseline commit resolved robustly in Step 2 (same run-block scope) — pickaxe on the
+      # `version = "X"` pyproject string, HEAD-ancestry, with a bounded fail-safe — instead of the old
+      # `git log --all | grep "bump version to ${BASELINE}"` which missed admin-set versions and poisoned
+      # the differ base with a cross-branch commit (incident 2026-06-09 spurious-cascade root cause).
       #
       # [Content-based public-surface breaking-detection rationale]
-          # ── Content-based public-surface breaking detection (SSOT differ) ──
-          # Replaces the crude `git diff __init__.py | grep '^-'` text heuristic that
-          # flagged ANY removed line (reformatting / import-reordering / docstring edits)
-          # as breaking — the false-positive source of spurious cascade locks.
-          # The differ (scripts/cicd/detect_breaking_change.py in unified-trading-pm) does an
-          # AST diff of the PUBLIC API/schema surface: removed export, removed/renamed symbol,
-          # incompatible signature change, removed/renamed/retyped schema field, or removed
-          # HTTP route = breaking; added-optional / additive / docstring / reformat = NOT breaking.
+      # ── Content-based public-surface breaking detection (SSOT differ) ──
+      # Replaces the crude `git diff __init__.py | grep '^-'` text heuristic that
+      # flagged ANY removed line (reformatting / import-reordering / docstring edits)
+      # as breaking — the false-positive source of spurious cascade locks.
+      # The differ (scripts/cicd/detect_breaking_change.py in unified-trading-pm) does an
+      # AST diff of the PUBLIC API/schema surface: removed export, removed/renamed symbol,
+      # incompatible signature change, removed/renamed/retyped schema field, or removed
+      # HTTP route = breaking; added-optional / additive / docstring / reformat = NOT breaking.
       #
       # [here-string-not-pipe rationale (2026-06-04 SIGPIPE incident)]
-          # here-string, NOT echo "$COMMITS" | head: a large COMMITS list floods the pipe and
-          # head -1 closes it after one line → echo SIGPIPEs → pipefail fails the assignment →
-          # set -e aborts step 4 ("Compute next semver"). This was the 2nd fleet-wide jam after
-          # the PM-checkout path bug (only surfaced once step 3 stopped failing first). 2026-06-04.
+      # here-string, NOT echo "$COMMITS" | head: a large COMMITS list floods the pipe and
+      # head -1 closes it after one line → echo SIGPIPEs → pipefail fails the assignment →
+      # set -e aborts step 4 ("Compute next semver"). This was the 2nd fleet-wide jam after
+      # the PM-checkout path bug (only surfaced once step 3 stopped failing first). 2026-06-04.
       #
       # [label-check advisory-only rationale]
-            # label-check is ADVISORY only (cicd_mvp Phase 1) — it is NOT a required check, so a
-            # failure status here surfaces the mismatch on the main commit for visibility but
-            # never blocks promotion (the promote PR already merged on v2+SIT). We still skip the
-            # bump on a mismatch so a mislabelled commit does not mint a wrong-magnitude version.
+      # label-check is ADVISORY only (cicd_mvp Phase 1) — it is NOT a required check, so a
+      # failure status here surfaces the mismatch on the main commit for visibility but
+      # never blocks promotion (the promote PR already merged on v2+SIT). We still skip the
+      # bump on a mismatch so a mislabelled commit does not mint a wrong-magnitude version.
       - name: Compute next semver via diff analysis
         id: compute
         env:
@@ -1139,4 +1139,3 @@ jobs:
       dedup_key: "semver-recovered:${{ inputs.repo_name }}"
       cooldown_min: 15
     secrets: inherit
-
