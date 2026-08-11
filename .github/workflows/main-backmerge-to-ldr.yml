@@ -335,6 +335,32 @@ jobs:
               || echo "[backmerge] orchestrator escalation dispatch failed (best-effort; human PR still open)"
           fi
 
+          # On a genuine script error (git fetch/push/etc. died for a non-race, non-conflict
+          # reason — see the ERR trap above), escalate to the orchestrator so a worker actually
+          # looks at it instead of the main->live-defi-rollout sync bridge (every AO slot
+          # worker's clone depends on staying fresh off this) silently staying broken until a
+          # human happens to read the notify-failure Slack alert (Structural Finding B,
+          # ci_reconcile_overnight_batch_2026_08_11.md — a non-self-healing backmerge failure had
+          # zero AO coverage before this; item 4 that session self-healed on its OWN next
+          # scheduled run, but a recurrence that doesn't self-heal had nowhere to go). Mirrors the
+          # conflict-escalation block above exactly (same App-token repository_dispatch to
+          # unified-trading-pm's escalate-to-orchestrator.yml listener — MUST target
+          # unified-trading-pm, not ${GITHUB_REPOSITORY}, for the same reason documented above),
+          # just gated on DECISION=error with a distinct wall_type so the worker's judgment
+          # prompt frames it as a sync-bridge failure to diagnose, not a PR conflict to resolve.
+          if [ "${DECISION}" = "error" ]; then
+            REPO_NAME="${GITHUB_REPOSITORY##*/}"
+            GH_TOKEN="${GH_PAT:-}" gh api "repos/${GITHUB_REPOSITORY_OWNER}/unified-trading-pm/dispatches" \
+              -f event_type=escalate-to-orchestrator \
+              -f "client_payload[repo]=${REPO_NAME}" \
+              -f "client_payload[pr_number]=0" \
+              -f 'client_payload[wall_type]=backmerge_sync_failure' \
+              -f "client_payload[context]=main->live-defi-rollout back-merge FAILED (not a conflict): ${REASON}. Diagnose on live-defi-rollout (check the run log for the ERR-trap line/command that died — commonly git fetch/push auth or transport), fix, and confirm the next main-backmerge-to-ldr run for this repo succeeds. Never force-push live-defi-rollout." \
+              -f 'client_payload[model]=sonnet' \
+              >/dev/null 2>&1 && echo "[backmerge] escalated sync failure to orchestrator (sonnet worker)" \
+              || echo "[backmerge] orchestrator escalation dispatch failed (best-effort; notify-failure Slack alert still fires)"
+          fi
+
           # A real error (not conflict/race/noop/merged) is the only red-fail case.
           if [ "${DECISION}" = "error" ]; then
             exit 1
