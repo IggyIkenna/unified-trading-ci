@@ -414,12 +414,24 @@ jobs:
         # even with identical deps, so CI's `uv lock --check` would false-fail.
         # Single canonical definition: unified-trading-pm/scripts/workspace/resolve-canonical-versions.py
         # — fetched directly (the "Clone unified-trading-pm and dependencies" step hasn't run here yet).
-        # SSOT: plans/active/uv_lockfile_determinism_2026_06_02.md
+        # Candidate branches, first match wins: the coordinated DEP_BRANCH (a same-named branch in
+        # unified-trading-pm, for a cross-repo change to the pin), else live-defi-rollout (content-SSOT,
+        # matching what the dep-clone step checks out), else main. A promotion PR's head_ref is
+        # `promote/<repo>/<sha>` — that branch never exists in unified-trading-pm, so without this
+        # fallback the fetch 404s under `-f`+`pipefail` and every slice dies before uv is installed
+        # (fleet-wide ldr_qg_failure 2026-08-11: features-service#1003 + unified-api-contracts promote PRs).
+        # SSOT: codex/06-coding-standards/dependency-management.md
         run: |
-          UV_VERSION="$(curl -fsSL -H "Authorization: token ${GH_PAT}" \
-            "https://raw.githubusercontent.com/${GITHUB_REPOSITORY_OWNER}/unified-trading-pm/${DEP_BRANCH:-main}/scripts/workspace/resolve-canonical-versions.py" \
-            2>/dev/null | grep -oP '^UV_VERSION = "\K[^"]+')"
-          pip install "uv${UV_VERSION:+==$UV_VERSION}"
+          UV_VERSION=""
+          for _cand in "${DEP_BRANCH:-}" live-defi-rollout main; do
+            [ -n "$_cand" ] || continue
+            UV_VERSION="$(curl -fsSL -H "Authorization: token ${GH_PAT}" \
+              "https://raw.githubusercontent.com/${GITHUB_REPOSITORY_OWNER}/unified-trading-pm/${_cand}/scripts/workspace/resolve-canonical-versions.py" \
+              2>/dev/null | grep -oP '^UV_VERSION = "\K[^"]+' || true)"
+            [ -n "$UV_VERSION" ] && break
+          done
+          [ -n "$UV_VERSION" ] || { echo "::error::Could not resolve canonical UV_VERSION from unified-trading-pm (tried: ${DEP_BRANCH:-<none>}, live-defi-rollout, main)"; exit 1; }
+          pip install "uv==${UV_VERSION}"
 
       - name: Cache uv package cache
         # Sized before shipping (ci_test_content_and_tooling_speed_findings_2026_07_28.md
