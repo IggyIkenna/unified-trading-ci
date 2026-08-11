@@ -274,6 +274,23 @@ jobs:
               break
             fi
 
+            # Archive-resurrection auto-heal (2026-08-11): a clean merge (no textual conflict) can
+            # still silently resurrect an already-archived doc as a plans/active/** duplicate — main
+            # never saw LDR's archival rename, and git's merge unions both trees rather than
+            # detecting the rename (found live: infra_capture_and_devops_leftovers_2026_07_06.md).
+            # check_no_silent_revert_loss above doesn't catch this (it only compares against LDR's
+            # immediate parent commit, not the archival's actual — often much earlier — commit).
+            # Heal it INTO this merge commit so LDR's tip never observes the duplicate, not even
+            # transiently: PM-only (plans/ has no equivalent elsewhere), no-op everywhere else.
+            if [ -f scripts/plan-hygiene/fix_backmerge_archive_resurrection.py ]; then
+              HEAL_OUT="$(python3 scripts/plan-hygiene/fix_backmerge_archive_resurrection.py)"
+              if [ -n "$HEAL_OUT" ]; then
+                echo "[backmerge] 🩹 archive-resurrection auto-heal:"
+                printf '%s\n' "$HEAL_OUT"
+                git commit --no-edit --quiet --amend
+              fi
+            fi
+
             # FF-only push (default push is non-destructive on the destination ref).
             if git push origin "HEAD:live-defi-rollout" 2>&1 | tee /tmp/push.log; then
               DECISION="merged"
