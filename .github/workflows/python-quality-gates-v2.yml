@@ -416,8 +416,17 @@ jobs:
         # — fetched directly (the "Clone unified-trading-pm and dependencies" step hasn't run here yet).
         # SSOT: plans/active/uv_lockfile_determinism_2026_06_02.md
         run: |
+          # DEP_BRANCH mirrors the PR head ref (or the triggering ref). On an LDR→main/staging
+          # PROMOTE PR the head is an auto-generated `promote/<repo>/<sha>` branch that exists ONLY
+          # on the calling repo — it 404s on unified-trading-pm, so a bare `${DEP_BRANCH:-main}`
+          # fetch reds the gate before any QG leg runs (regression 2026-08-11, 6aa50d2). Fall back
+          # to `main` (the canonical default) when the branch-specific fetch fails; this file is
+          # identical on main vs live-defi-rollout today. Mirrors clone_repo()'s fallback chain.
           UV_VERSION="$(curl -fsSL -H "Authorization: token ${GH_PAT}" \
             "https://raw.githubusercontent.com/${GITHUB_REPOSITORY_OWNER}/unified-trading-pm/${DEP_BRANCH:-main}/scripts/workspace/resolve-canonical-versions.py" \
+            2>/dev/null | grep -oP '^UV_VERSION = "\K[^"]+' \
+            || curl -fsSL -H "Authorization: token ${GH_PAT}" \
+            "https://raw.githubusercontent.com/${GITHUB_REPOSITORY_OWNER}/unified-trading-pm/main/scripts/workspace/resolve-canonical-versions.py" \
             2>/dev/null | grep -oP '^UV_VERSION = "\K[^"]+')"
           pip install "uv${UV_VERSION:+==$UV_VERSION}"
 
