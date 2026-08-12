@@ -1447,6 +1447,64 @@ jobs:
             echo "still_failing=true" >> "$GITHUB_OUTPUT"
           fi
 
+  # ── Tier 3 — escalate to an agent if STILL failing 30min in (2026-08-12) ─────────────────
+  # Only reached if tier 2 (debounce-promote-qg-fail, above) already confirmed the PR was
+  # still open + still failing at T+15min. This job waits ANOTHER 15min (T+30min total) and
+  # re-checks AGAIN — surviving TWO independent debounce cycles is a much stronger signal
+  # this is a genuine regression, not promote-cadence noise, so only NOW is an agent worth
+  # dispatching. wall_type=promote_qg_failure routes to the dedicated quality_gate_resolution
+  # role (not the generic cicd catch-all) — see server/escalation.py WALL_TYPES and
+  # codex/04-architecture/agent-orchestrator-ci-escalation-wall-types.md for the full design.
+  escalate-promote-qg-fail:
+    name: Escalate — promote-PR QG failure still unresolved after 30min
+    needs: [content-gate, qg-slices, supersede-check, debounce-promote-qg-fail]
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'promote/') &&
+      needs.content-gate.outputs.cache_hit != 'true' &&
+      (needs.qg-slices.result == 'failure' || needs.qg-slices.result == 'cancelled') &&
+      needs.supersede-check.outputs.superseded != 'true' &&
+      needs.debounce-promote-qg-fail.outputs.still_failing == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Wait another 15 minutes (T+30min total from first failure)
+        run: sleep 900
+      - name: Re-check + dispatch escalation if still open and still failing
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [ -z "${GH_PAT}" ] && echo "GH_PAT not set — skipping escalation dispatch (Slack alert already fired at T+15min)" && exit 0
+          STATE="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")"
+          if [ "$STATE" != "OPEN" ]; then
+            echo "PR #$PR_NUMBER is now $STATE — auto-resolved during the second debounce window, no escalation needed"
+            exit 0
+          fi
+          CONCLUSION="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json statusCheckRollup \
+            --jq '[.statusCheckRollup[]? | select(.name == "quality-gates-v2")][0].conclusion // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")"
+          if [ "$CONCLUSION" = "SUCCESS" ]; then
+            echo "PR #$PR_NUMBER is now green — no escalation needed"
+            exit 0
+          fi
+          echo "PR #$PR_NUMBER still open with quality-gates-v2 conclusion=$CONCLUSION after 30min (survived two debounce cycles) — dispatching escalation"
+          # MUST target unified-trading-pm, NOT ${{ github.repository }} — the
+          # escalate-to-orchestrator.yml LISTENER lives only there (same gotcha
+          # documented at length in this repo's main-backmerge-to-ldr.yml).
+          GH_TOKEN="${GH_PAT}" gh api "repos/${{ github.repository_owner }}/unified-trading-pm/dispatches" \
+            -f event_type=escalate-to-orchestrator \
+            -f "client_payload[repo]=${REPO_NAME}" \
+            -f "client_payload[pr_number]=${PR_NUMBER}" \
+            -f 'client_payload[wall_type]=promote_qg_failure' \
+            -f "client_payload[context]=Promote PR #${PR_NUMBER} on ${REPO_NAME}: quality-gates-v2 genuinely FAILED (conclusion=${CONCLUSION}), still open and still red after surviving two independent debounce re-checks over 30 minutes — not a promote-cadence race. Run: ${RUN_URL}. Fix the root cause on live-defi-rollout (never the promote PR branch itself — it is ephemeral and the drain bot will supersede it regardless)." \
+            -f 'client_payload[model]=sonnet' \
+            >/dev/null 2>&1 && echo "escalated promote_qg_failure for ${REPO_NAME}#${PR_NUMBER} to orchestrator" \
+            || echo "::warning::orchestrator escalation dispatch failed (non-fatal — the T+15min Slack CRITICAL already alerted a human)"
+
   notify-qg-fail:
     name: Slack CRITICAL — QG Slice Failed
     needs: [content-gate, qg-slices, supersede-check, debounce-promote-qg-fail]
