@@ -5,6 +5,7 @@
 #
 # Differs from the python-service template only in dropping Ruff (no Python code
 # in this repo — it is 100% reusable GitHub Actions workflow YAML).
+ # This is the pre-commit config for the unified-trading-ci repository.
 
 default_install_hook_types:
   - pre-commit
