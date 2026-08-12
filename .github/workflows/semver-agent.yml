@@ -193,6 +193,19 @@ jobs:
                 fi ;;
               *) echo "SLACK_CI_WEBHOOK_URL not set/https — cannot page; failing the run loudly instead" ;;
             esac
+            # Escalate to an agent (2026-08-12) — previously Slack-only. MUST target
+            # unified-trading-pm (the escalate-to-orchestrator.yml listener lives only
+            # there), best-effort (never masks the exit 1 below). SSOT:
+            # codex/04-architecture/agent-orchestrator-ci-escalation-wall-types.md.
+            if [ -n "${{ secrets.GH_PAT }}" ]; then
+              curl -s -o /dev/null -X POST \
+                -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${{ github.repository_owner }}/unified-trading-pm/dispatches" \
+                -d "$(jq -n --arg repo "${{ inputs.repo_name }}" --arg ctx "$TEXT" \
+                  '{event_type:"escalate-to-orchestrator",client_payload:{repo:$repo,pr_number:0,wall_type:"semver_agent_failure",context:$ctx,authoring_slot:"semver-agent",model:"sonnet"}}')" \
+                && echo "escalated semver_agent_failure to orchestrator" || echo "orchestrator escalation dispatch failed (non-fatal)"
+            fi
             # Queue the page for the end-of-job ledger persist (alert-parity: every Slack
             # page is also observable on the deployment-ui Alerts page) — the persist step
             # runs `if: always()` so this survives the `exit 1` below.
@@ -423,6 +436,17 @@ jobs:
                   fi ;;
                 *) echo "SLACK_CI_WEBHOOK_URL not set/https — cannot page; failing the run loudly instead" ;;
               esac
+              # Escalate to an agent (2026-08-12) — see the circuit-breaker block above for
+              # the full rationale (same pattern, same wall_type).
+              if [ -n "${{ secrets.GH_PAT }}" ]; then
+                curl -s -o /dev/null -X POST \
+                  -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/${{ github.repository_owner }}/unified-trading-pm/dispatches" \
+                  -d "$(jq -n --arg repo "${{ inputs.repo_name }}" --arg ctx "$TEXT" \
+                    '{event_type:"escalate-to-orchestrator",client_payload:{repo:$repo,pr_number:0,wall_type:"semver_agent_failure",context:$ctx,authoring_slot:"semver-agent",model:"sonnet"}}')" \
+                  && echo "escalated semver_agent_failure to orchestrator" || echo "orchestrator escalation dispatch failed (non-fatal)"
+              fi
               # Queue the page for the end-of-job ledger persist (survives the exit 1).
               jq -n -c --arg t "$TEXT" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg ru "$RUN_URL" \
                 '{event_type:"slack_alert", timestamp:$ts, repo:"${{ inputs.repo_name }}", workflow_name:"semver-agent",
@@ -920,6 +944,17 @@ jobs:
                 fi ;;
               *) echo "SLACK_CI_WEBHOOK_URL not set/https — cannot page; failing the run loudly instead" ;;
             esac
+            # Escalate to an agent (2026-08-12) — see the circuit-breaker block above for
+            # the full rationale (same pattern, same wall_type).
+            if [ -n "${{ secrets.GH_PAT }}" ]; then
+              curl -s -o /dev/null -X POST \
+                -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${{ github.repository_owner }}/unified-trading-pm/dispatches" \
+                -d "$(jq -n --arg repo "${{ inputs.repo_name }}" --arg ctx "$TEXT" \
+                  '{event_type:"escalate-to-orchestrator",client_payload:{repo:$repo,pr_number:0,wall_type:"semver_agent_failure",context:$ctx,authoring_slot:"semver-agent",model:"sonnet"}}')" \
+                && echo "escalated semver_agent_failure to orchestrator" || echo "orchestrator escalation dispatch failed (non-fatal)"
+            fi
             # Queue the page for the end-of-job ledger persist (survives the exit 1).
             jq -n -c --arg t "$TEXT" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg ru "$RUN_URL" \
               '{event_type:"slack_alert", timestamp:$ts, repo:"${{ inputs.repo_name }}", workflow_name:"semver-agent",
