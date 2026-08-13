@@ -768,22 +768,68 @@ jobs:
           # install deterministic into `.venv`. Mirrors the LOCAL fix at base-service.sh:316-327.
           # SSOT: plans/active/ci_local_qg_parity_2026_06_08.md + promotion_queue_conflict_wall_pileup_2026_06_17.md.
           #
-          # `--no-deps` (2026-08-13, ci_reconcile): this loop only needs the sibling PACKAGE
-          # importable for cross-service test imports — an unconstrained `uv pip install -e` was
-          # re-resolving the sibling's own transitive deps and silently upgrading an already
-          # `--frozen`-installed, range-pinned package past the calling repo's own pyproject ceiling
-          # (measured live: features-service's pytz<2026.0 pin clobbered to 2026.3.post1 by
-          # `uv pip install -e ../e2e-testing`, caught by the new installed-distribution floor
-          # guardrail). `--no-deps` installs just the sibling itself and leaves the frozen-verified
-          # venv state alone; if a sibling's own transitive dep is genuinely needed, that surfaces as
-          # a specific ImportError in the test that needs it rather than a silent version clobber.
+          # `--no-deps` was tried 2026-08-13 (ci_reconcile) to stop this loop clobbering frozen-pinned
+          # versions, and REJECTED within the day: it drops the sibling's OWN transitive deps, so
+          # unified_api_contracts loses pydantic in any consumer whose own pyproject never declares it
+          # (PM: ModuleNotFoundError: No module named 'pydantic' → the promote-PR QG wall agt-f602e8).
+          # This was already measured + rejected 2026-08-04 for the SAME reason
+          # (plans/archive/issues/qg_editable_sibling_install_regresses_override_only_cve_fixes_2026_08_04.md)
+          # in base-service.sh — `--no-deps` is the known-wrong fix. The correct approach is what the
+          # shared base scripts use: pass `--overrides` (each sibling's [tool.uv] override-dependencies,
+          # so CVE floors survive the re-resolve) AND `--constraints` (this repo's OWN frozen uv.lock
+          # pins, so an already-`--frozen`-installed, range-pinned package is NOT silently upgraded past
+          # the calling repo's ceiling — the features-service pytz<2026.0 → 2026.3.post1 clobber
+          # 451e717 was fixing). Both flags preserve full normal transitive resolution, so pydantic
+          # (and any other transitive) resolves the same way it did under the pre-451e717 plain `-e`.
           _qg_venv_py=".venv/bin/python"; [ -x "$_qg_venv_py" ] || _qg_venv_py="$(command -v python3)"
+          _ovr_file="${TMPDIR:-/tmp}/qg-wf-local-deps-overrides.$$"
+          _con_file="${TMPDIR:-/tmp}/qg-wf-local-deps-constraints.$$"
+          : > "$_ovr_file"; : > "$_con_file"
+          # --overrides: merge every installed sibling's [tool.uv] override-dependencies.
+          for dep in $DEP_REPOS; do
+            [ -f "../$dep/pyproject.toml" ] || continue
+            python3 -c "
+          import tomllib, sys
+          try:
+              with open(sys.argv[1], 'rb') as f:
+                  d = tomllib.load(f)
+          except Exception:
+              sys.exit(0)
+          for line in d.get('tool', {}).get('uv', {}).get('override-dependencies', []):
+              print(line)
+          " "../$dep/pyproject.toml" >> "$_ovr_file" 2>/dev/null || :
+          done
+          # --constraints: this repo's OWN uv.lock pins (name==version only), minus any name already
+          # in the overrides (an override and a constraint on the same name make uv fail the resolve).
+          # Mirrors qg_build_local_deps_constraints() in unified-trading-pm/scripts/quality-gates-base/qg-common.sh.
+          uv export --frozen --no-emit-project --no-hashes 2>/dev/null \
+            | python3 -c "
+          import re, sys
+          norm = lambda n: re.sub(r'[-_.]+', '-', n).lower()
+          skip = set()
+          try:
+              with open(sys.argv[1]) as f:
+                  for line in f:
+                      line = line.strip()
+                      if line and not line.startswith('#'):
+                          skip.add(norm(re.split(r'[<>=!~\\[; ]', line)[0]))
+          except OSError:
+              pass
+          for line in sys.stdin:
+              s = line.strip()
+              m = re.match(r'^([A-Za-z0-9][A-Za-z0-9._-]*)(\\[[^\\]]*\\])?==', s)
+              if m and norm(m.group(1)) not in skip:
+                  print(s)
+          " "$_ovr_file" > "$_con_file" 2>/dev/null || : > "$_con_file"
           for dep in $DEP_REPOS; do
             if [ -d "../$dep" ] && ! uv pip show "$dep" >/dev/null 2>&1; then
               echo "Installing test-only sibling dep not in pyproject: ../$dep (into $_qg_venv_py)"
-              uv pip install -e "../$dep" --python "$_qg_venv_py" --no-deps || echo "WARN: editable install of ../$dep failed (non-fatal)"
+              uv pip install -e "../$dep" --python "$_qg_venv_py" \
+                --overrides "$_ovr_file" --constraints "$_con_file" \
+                || echo "WARN: editable install of ../$dep failed (non-fatal)"
             fi
           done
+          rm -f "$_ovr_file" "$_con_file"
           # Visibility (no more SILENT Unknown-cascade): warn loudly if a cloned sibling dep still
           # isn't resolved in .venv (the cascade root) — surfaces it above any downstream reportUnknown
           # noise. WARN not error: the `--python` targeting above is the deterministic cure; a hard exit
