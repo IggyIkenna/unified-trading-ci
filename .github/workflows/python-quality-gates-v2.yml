@@ -1398,17 +1398,32 @@ jobs:
   # keyed by REPO+BRANCH so a still-red branch pages once per red-period, not per failing
   # push; a genuinely new failure after cooldown_min re-alerts. See the `with:` block below
   # + codex/04-architecture/ci-alerting.md for the full dedup/cooldown contract.
-  # ── Promote-PR debounce (2026-08-12, ci_reconcile hardening) ────────────────────────────
-  # A promote PR's QG failure is very often a promote-cadence race (the branch was cut before
-  # a later LDR edit landed) that self-resolves within ~10-15min when the drain bot supersedes
-  # it with a fresh PR — measured repeatedly the same day (multiple unified-trading-pm promote
-  # PRs closed-as-superseded 10-16min after their own CRITICAL post). Only promote/* PRs into
-  # main get this treatment: a direct push (no automatic supersede mechanism to wait for) still
-  # alerts instantly via notify-qg-fail's own `if:` below (this job's `if:` simply never matches
-  # a push event, so `needs.debounce-promote-qg-fail.outputs.still_failing` stays empty and the
-  # OR-branch in notify-qg-fail's `if:` covers it unchanged).
+  # ── Promote-PR debounce (2026-08-12, ci_reconcile hardening; REDESIGNED 2026-08-13) ─────
+  # ORIGINAL DESIGN (2026-08-12) slept 15min then re-checked whether THIS SPECIFIC PR NUMBER
+  # was still open+red. BUG (found live 2026-08-13, ci_reconcile): PM's drain bot supersedes a
+  # promote PR roughly every ~15min too — almost exactly this job's debounce window — so by the
+  # time the sleep ended, that exact PR had almost always ALREADY been closed-as-superseded
+  # (a brand-new PR opened in its place), and the job read that as "auto-resolved" even when the
+  # underlying failure was completely unchanged and recurring on every successor PR. Measured:
+  # zero `promote_qg_failure` escalations fired across ~12 CONTINUOUS hours of a real, unfixed
+  # regression (a bats-test bug — /plans/archive/2026_08/ci_escalation_coverage_expansion_2026_08_12.md's
+  # sibling incident) — the mechanism was structurally unreachable under PM's own promote cadence,
+  # the exact repo it was built for.
+  #
+  # FIX: stop tracking a single ephemeral PR's lifetime. Track the underlying CONDITION across
+  # PR supersessions instead, by directly reading this repo's own quality-gates-v2 run HISTORY
+  # (same "ground truth over sleep-and-hope" principle as sit_gate_stuck_detector.py's consecutive-
+  # tick streak). Walk recent promote/* PR runs newest-first; the streak is CONTINUOUS FAILURE
+  # back to the first non-success — regardless of which PR number carried each run. A `success`
+  # anywhere breaks the streak (self-heals correctly, same as before). No sleep needed at all:
+  # the natural ~15min recurrence of promote-PR pushes on a busy repo IS the polling interval;
+  # a QUIET repo simply never re-invokes this job, which is fine (nothing to detect either way).
+  # Server-side escalation dedup (agent-orchestrator server/escalation.py's root_key / open-row
+  # matching — "the SAME wall must dedup onto the open row, not mint a second worker") makes it
+  # safe for this job to re-fire the dispatch call on every subsequent invocation once duration
+  # crosses 30min; the server absorbs re-fires as a `reescalations` increment, not a duplicate.
   debounce-promote-qg-fail:
-    name: Debounce — wait 15min before alerting on a promote-PR QG failure
+    name: Streak-check — continuous promote-PR QG failure duration (survives PR supersession)
     needs: [content-gate, qg-slices, supersede-check]
     if: |
       always() &&
@@ -1418,80 +1433,60 @@ jobs:
       (needs.qg-slices.result == 'failure' || needs.qg-slices.result == 'cancelled') &&
       needs.supersede-check.outputs.superseded != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     outputs:
       still_failing: ${{ steps.recheck.outputs.still_failing }}
+      duration_min: ${{ steps.recheck.outputs.duration_min }}
     steps:
-      - name: Wait 15 minutes (promote-cadence races usually self-resolve inside this window)
-        run: sleep 900
-      - name: Re-check whether this PR is still open and still failing
+      - name: Derive continuous-failure streak duration from real run history (no sleep)
         id: recheck
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          STATE="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")"
-          if [ "$STATE" != "OPEN" ]; then
-            echo "PR #$PR_NUMBER is now $STATE — auto-resolved during the debounce window (superseded/closed), no alert needed"
-            echo "still_failing=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          CONCLUSION="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json statusCheckRollup \
-            --jq '[.statusCheckRollup[]? | select(.name == "quality-gates-v2")][0].conclusion // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")"
-          if [ "$CONCLUSION" = "SUCCESS" ]; then
-            echo "PR #$PR_NUMBER is now green (a later push on the same PR fixed it) — no alert needed"
-            echo "still_failing=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "PR #$PR_NUMBER still open with quality-gates-v2 conclusion=$CONCLUSION after 15min — genuinely stuck, alerting"
+          NOW_EPOCH=$(date -u +%s)
+          # GH's runs-list API has no head_branch PREFIX filter (promote heads are per-SHA,
+          # e.g. promote/<repo>/<sha12> — never a stable name) — fetch a generous recent page
+          # of THIS repo's own quality-gates-v2 runs and filter client-side.
+          RUNS_JSON="$(gh api "repos/${{ github.repository }}/actions/workflows/quality-gates-v2.yml/runs?event=pull_request&per_page=50" --jq '.workflow_runs' 2>/dev/null || echo '[]')"
+          STREAK_START_EPOCH=$(echo "${RUNS_JSON}" | jq -r --argjson now "${NOW_EPOCH}" '
+            [ .[] | select(.head_branch | startswith("promote/")) | select(.conclusion != null) ]
+            | sort_by(.created_at) | reverse
+            as $runs
+            | reduce $runs[] as $r
+                ({broke: false, start: $now};
+                 if .broke then .
+                 elif ($r.conclusion == "success") then .broke = true
+                 else .start = ($r.created_at | fromdateiso8601)
+                 end)
+            | .start
+          ')
+          DURATION_MIN=$(( (NOW_EPOCH - STREAK_START_EPOCH) / 60 ))
+          echo "promote-PR QG failure streak for ${{ github.repository }} (across PR supersessions): ${DURATION_MIN}min continuous"
+          echo "duration_min=${DURATION_MIN}" >> "$GITHUB_OUTPUT"
+          if [ "${DURATION_MIN}" -ge 15 ]; then
             echo "still_failing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "still_failing=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # ── Tier 3 — escalate to an agent if STILL failing 30min in (2026-08-12) ─────────────────
-  # Only reached if tier 2 (debounce-promote-qg-fail, above) already confirmed the PR was
-  # still open + still failing at T+15min. This job waits ANOTHER 15min (T+30min total) and
-  # re-checks AGAIN — surviving TWO independent debounce cycles is a much stronger signal
-  # this is a genuine regression, not promote-cadence noise, so only NOW is an agent worth
-  # dispatching. wall_type=promote_qg_failure routes to the dedicated quality_gate_resolution
-  # role (not the generic cicd catch-all) — see server/escalation.py WALL_TYPES and
-  # codex/04-architecture/agent-orchestrator-ci-escalation-wall-types.md for the full design.
-  escalate-promote-qg-fail:
-    name: Escalate — promote-PR QG failure still unresolved after 30min
-    needs: [content-gate, qg-slices, supersede-check, debounce-promote-qg-fail]
-    if: |
-      always() &&
-      github.event_name == 'pull_request' &&
-      startsWith(github.head_ref, 'promote/') &&
-      needs.content-gate.outputs.cache_hit != 'true' &&
-      (needs.qg-slices.result == 'failure' || needs.qg-slices.result == 'cancelled') &&
-      needs.supersede-check.outputs.superseded != 'true' &&
-      needs.debounce-promote-qg-fail.outputs.still_failing == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Wait another 15 minutes (T+30min total from first failure)
-        run: sleep 900
-      - name: Re-check + dispatch escalation if still open and still failing
+      # ── Tier 3 — escalate to an agent once the streak crosses 30min (2026-08-12, redesigned
+      # 2026-08-13 alongside the streak logic above — same job now, no second sleep-gated job).
+      # wall_type=promote_qg_failure routes to the dedicated quality_gate_resolution role (not
+      # the generic cicd catch-all) — see server/escalation.py WALL_TYPES and
+      # codex/04-architecture/agent-orchestrator-ci-escalation-wall-types.md for the full design.
+      - name: Escalate to AO once the streak is genuinely 30+ min old
+        if: fromJSON(steps.recheck.outputs.duration_min) >= 30
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO_NAME: ${{ github.event.repository.name }}
+          DURATION_MIN: ${{ steps.recheck.outputs.duration_min }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          [ -z "${GH_PAT}" ] && echo "GH_PAT not set — skipping escalation dispatch (Slack alert already fired at T+15min)" && exit 0
-          STATE="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")"
-          if [ "$STATE" != "OPEN" ]; then
-            echo "PR #$PR_NUMBER is now $STATE — auto-resolved during the second debounce window, no escalation needed"
-            exit 0
-          fi
-          CONCLUSION="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json statusCheckRollup \
-            --jq '[.statusCheckRollup[]? | select(.name == "quality-gates-v2")][0].conclusion // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")"
-          if [ "$CONCLUSION" = "SUCCESS" ]; then
-            echo "PR #$PR_NUMBER is now green — no escalation needed"
-            exit 0
-          fi
-          echo "PR #$PR_NUMBER still open with quality-gates-v2 conclusion=$CONCLUSION after 30min (survived two debounce cycles) — dispatching escalation"
+          [ -z "${GH_PAT}" ] && echo "GH_PAT not set — skipping escalation dispatch (Slack alert already fired at 15min)" && exit 0
+          echo "streak is ${DURATION_MIN}min old (>=30) — dispatching escalation (server dedupes re-fires onto the open row via root_key)"
           # MUST target unified-trading-pm, NOT ${{ github.repository }} — the
           # escalate-to-orchestrator.yml LISTENER lives only there (same gotcha
           # documented at length in this repo's main-backmerge-to-ldr.yml).
@@ -1500,10 +1495,10 @@ jobs:
             -f "client_payload[repo]=${REPO_NAME}" \
             -f "client_payload[pr_number]=${PR_NUMBER}" \
             -f 'client_payload[wall_type]=promote_qg_failure' \
-            -f "client_payload[context]=Promote PR #${PR_NUMBER} on ${REPO_NAME}: quality-gates-v2 genuinely FAILED (conclusion=${CONCLUSION}), still open and still red after surviving two independent debounce re-checks over 30 minutes — not a promote-cadence race. Run: ${RUN_URL}. Fix the root cause on live-defi-rollout (never the promote PR branch itself — it is ephemeral and the drain bot will supersede it regardless)." \
+            -f "client_payload[context]=${REPO_NAME}'s promote-PR quality-gates-v2 has been CONTINUOUSLY red for ${DURATION_MIN}min across successive promote-PR supersessions (current PR #${PR_NUMBER}) — not a promote-cadence race. Run: ${RUN_URL}. Fix the root cause on live-defi-rollout (never the promote PR branch itself — it is ephemeral and the drain bot will supersede it regardless)." \
             -f 'client_payload[model]=sonnet' \
-            >/dev/null 2>&1 && echo "escalated promote_qg_failure for ${REPO_NAME}#${PR_NUMBER} to orchestrator" \
-            || echo "::warning::orchestrator escalation dispatch failed (non-fatal — the T+15min Slack CRITICAL already alerted a human)"
+            >/dev/null 2>&1 && echo "escalated promote_qg_failure for ${REPO_NAME}#${PR_NUMBER} to orchestrator (streak=${DURATION_MIN}min)" \
+            || echo "::warning::orchestrator escalation dispatch failed (non-fatal — the 15min Slack CRITICAL already alerted a human)"
 
   notify-qg-fail:
     name: Slack CRITICAL — QG Slice Failed
