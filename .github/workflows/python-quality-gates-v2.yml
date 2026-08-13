@@ -767,11 +767,21 @@ jobs:
           # Flaky (green only when uv happened to pick `.venv`). Forcing the interpreter makes the
           # install deterministic into `.venv`. Mirrors the LOCAL fix at base-service.sh:316-327.
           # SSOT: plans/active/ci_local_qg_parity_2026_06_08.md + promotion_queue_conflict_wall_pileup_2026_06_17.md.
+          #
+          # `--no-deps` (2026-08-13, ci_reconcile): this loop only needs the sibling PACKAGE
+          # importable for cross-service test imports — an unconstrained `uv pip install -e` was
+          # re-resolving the sibling's own transitive deps and silently upgrading an already
+          # `--frozen`-installed, range-pinned package past the calling repo's own pyproject ceiling
+          # (measured live: features-service's pytz<2026.0 pin clobbered to 2026.3.post1 by
+          # `uv pip install -e ../e2e-testing`, caught by the new installed-distribution floor
+          # guardrail). `--no-deps` installs just the sibling itself and leaves the frozen-verified
+          # venv state alone; if a sibling's own transitive dep is genuinely needed, that surfaces as
+          # a specific ImportError in the test that needs it rather than a silent version clobber.
           _qg_venv_py=".venv/bin/python"; [ -x "$_qg_venv_py" ] || _qg_venv_py="$(command -v python3)"
           for dep in $DEP_REPOS; do
             if [ -d "../$dep" ] && ! uv pip show "$dep" >/dev/null 2>&1; then
               echo "Installing test-only sibling dep not in pyproject: ../$dep (into $_qg_venv_py)"
-              uv pip install -e "../$dep" --python "$_qg_venv_py" || echo "WARN: editable install of ../$dep failed (non-fatal)"
+              uv pip install -e "../$dep" --python "$_qg_venv_py" --no-deps || echo "WARN: editable install of ../$dep failed (non-fatal)"
             fi
           done
           # Visibility (no more SILENT Unknown-cascade): warn loudly if a cloned sibling dep still
