@@ -409,24 +409,31 @@ jobs:
         shell: bash
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
-          # Fetch the canonical uv pin from the unified-trading-pm branch that matches THIS run —
-          # but ONLY when the caller IS unified-trading-pm (a PR there that bumps UV_VERSION must
-          # test against its own branch). Every other caller's PR-head branch (e.g.
-          # `promote/<repo>/<sha>`) does not exist in unified-trading-pm, so a head_ref-keyed fetch
-          # 404s and kills the step — a fleet-wide v2 red at this step (2026-08-11, deployment-api#577).
-          # The pin's single canonical home is PM's default branch.
-          DEP_BRANCH: ${{ github.repository == 'IggyIkenna/unified-trading-pm' && (github.head_ref || github.ref_name) || 'main' }}
+          # unified-trading-pm's own runs (incl. a PR that bumps UV_VERSION) read the LOCAL
+          # checkout instead of a remote fetch — the checkout step above already placed this
+          # run's exact content, local vs. head_ref-keyed-fetch is not a fork in what content
+          # is read, only in HOW it's reached. A remote raw-content fetch keyed on
+          # github.head_ref races an ephemeral `promote/unified-trading-pm/<sha>` head branch
+          # getting deleted by the next */15 auto-drain tick before the curl fires — that 404s
+          # (empty UV_VERSION) and kills the step, a recurring LDR->main promote-PR v2 red
+          # (2026-08-13/14; previous fix 2026-08-11 deployment-api#577 solved the cross-repo
+          # 404 but re-introduced this same-repo race for PM's own promote PRs). Every other
+          # caller repo has no local copy of PM's file, so it still fetches PM's `main`.
+          IS_PM: ${{ github.repository == 'IggyIkenna/unified-trading-pm' }}
         # Pinned for uv.lock determinism — an unpinned uv reformats the lock (revision bump)
         # even with identical deps, so CI's `uv lock --check` would false-fail.
         # Single canonical definition: unified-trading-pm/scripts/workspace/resolve-canonical-versions.py
-        # — fetched directly (the "Clone unified-trading-pm and dependencies" step hasn't run here yet).
         # SSOT: /codex/06-coding-standards/dependency-management.md
         run: |
-          UV_VERSION="$(curl -fsSL -H "Authorization: token ${GH_PAT}" \
-            "https://raw.githubusercontent.com/${GITHUB_REPOSITORY_OWNER}/unified-trading-pm/${DEP_BRANCH:-main}/scripts/workspace/resolve-canonical-versions.py" \
-            2>/dev/null | grep -oP '^UV_VERSION = "\K[^"]+')"
+          if [ "${IS_PM}" = "true" ]; then
+            UV_VERSION="$(grep -oP '^UV_VERSION = "\K[^"]+' scripts/workspace/resolve-canonical-versions.py 2>/dev/null)"
+          else
+            UV_VERSION="$(curl -fsSL -H "Authorization: token ${GH_PAT}" \
+              "https://raw.githubusercontent.com/${GITHUB_REPOSITORY_OWNER}/unified-trading-pm/main/scripts/workspace/resolve-canonical-versions.py" \
+              2>/dev/null | grep -oP '^UV_VERSION = "\K[^"]+')"
+          fi
           # Fail loud — never pip-install the latest unpinned uv — if the canonical pin can't be resolved.
-          [ -n "$UV_VERSION" ] || { echo "::error::could not resolve canonical UV_VERSION from unified-trading-pm@${DEP_BRANCH:-main}" >&2; exit 1; }
+          [ -n "$UV_VERSION" ] || { echo "::error::could not resolve canonical UV_VERSION (is_pm=${IS_PM})" >&2; exit 1; }
           pip install "uv${UV_VERSION:+==$UV_VERSION}"
 
       - name: Cache uv package cache
