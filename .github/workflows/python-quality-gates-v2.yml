@@ -531,6 +531,64 @@ jobs:
         shell: bash
         run: echo "$HOME/.local/act-tools/bin" >> "$GITHUB_PATH"
 
+      - name: Resolve push-time dependency pin (promote-PR re-verification)
+        # Path #3 fix (tier_a_ci_status_gate_unrecoverable_deadlock_2026_08_09.md, todo 2):
+        # a push:[main]/push:[staging] re-verification triggered by a merged promote/* PR
+        # historically re-resolved unified-api-contracts/unified-trading-library
+        # CONTENT-FIRST at whatever live-defi-rollout HEAD existed at merge time — if a dep
+        # landed a new commit in the gap between the PR's own green quality-gates-v2 run and
+        # its merge, the push-time re-verification could fail against content the PR never
+        # actually validated (confirmed live 2026-08-09: instruments-service PR#1135,
+        # SUSHISWAP_V2-ARBITRUM landed in UAC between PR-validate and push-verify, producing
+        # a spurious ci_status=FAILING that deadlocked Tier-A promotion). Pin the push-time
+        # clone to the EXACT dep commit the PR-time run recorded (via the "Record dependency
+        # pin" step below, a `dep-pin/<repo>` commit status on the PR's own head sha) instead
+        # of re-resolving at HEAD. Only fires for a promote/* PR merge — any other push (a
+        # direct LDR push, a non-promote merge) has no PR-time pin to match and falls through
+        # to the existing content-first behaviour unchanged (fail-safe: a lookup miss is a
+        # no-op, never a hard failure).
+        if:
+          github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'staging') &&
+          steps.vcheck.outputs.skip_slice != 'true' && env.QG_CONTENT_HIT != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          DEP_REPOS: ${{ inputs.dep_repos }}
+        run: |
+          set -euo pipefail
+          PR_NUM="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[0].number // empty' 2>/dev/null || echo "")"
+          if [ -z "${PR_NUM}" ]; then
+            echo "no PR associated with ${GITHUB_SHA} — not a PR merge, dep-pin does not apply"
+            exit 0
+          fi
+          HEAD_BRANCH="$(gh pr view "${PR_NUM}" --repo "${GITHUB_REPOSITORY}" --json headRefName --jq .headRefName 2>/dev/null || echo "")"
+          case "${HEAD_BRANCH}" in
+            promote/*) ;;
+            *)
+              echo "PR #${PR_NUM} head '${HEAD_BRANCH}' is not a promote/* branch — dep-pin does not apply"
+              exit 0
+              ;;
+          esac
+          HEAD_SHA="$(gh pr view "${PR_NUM}" --repo "${GITHUB_REPOSITORY}" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")"
+          if [ -z "${HEAD_SHA}" ]; then
+            echo "could not resolve PR #${PR_NUM} head sha — dep-pin does not apply"
+            exit 0
+          fi
+          for _dep in unified-api-contracts unified-trading-library; do
+            case " ${DEP_REPOS} " in
+              *" ${_dep} "*)
+                _pin="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status" --jq ".statuses[] | select(.context==\"dep-pin/${_dep}\") | .description" 2>/dev/null | head -1 || echo "")"
+                if [ -n "${_pin}" ]; then
+                  _var="PIN_SHA_$(echo "${_dep}" | tr 'a-z-' 'A-Z_')"
+                  echo "${_var}=${_pin}" >> "$GITHUB_ENV"
+                  echo "resolved push-time pin for ${_dep}: ${_pin} (PR #${PR_NUM} head ${HEAD_SHA})"
+                else
+                  echo "no dep-pin status recorded for ${_dep} on PR #${PR_NUM} head ${HEAD_SHA} — falling back to content-first HEAD for this dep"
+                fi
+                ;;
+            esac
+          done
+
       - name: Clone unified-trading-pm and dependencies
         if: steps.vcheck.outputs.skip_slice != 'true' && env.QG_CONTENT_HIT != 'true'
         shell: bash
@@ -624,6 +682,32 @@ jobs:
             # resolving an OLD UAC → false pytest FAILING that re-stales tier-0 ci_status overnight). 3
             # attempts with backoff; clean the partial dir between tries so the next `git clone` can't
             # collide on an existing destination.
+            #
+            # PIN OVERRIDE (path #3 fix, tier_a_ci_status_gate_unrecoverable_deadlock_2026_08_09.md):
+            # a push-time re-verification of a promote/* PR merge may have resolved a PIN_SHA_<NAME>
+            # env var (see "Resolve push-time dependency pin" step) — the exact dep commit the PR's
+            # own PR-time run validated against. Honour it ahead of content-first HEAD so the
+            # push-time gate re-checks the SAME content, not whatever moved in the interim. A pin
+            # miss/checkout failure falls straight through to the unchanged content-first path below.
+            local _pin_var
+            _pin_var="PIN_SHA_$(echo "${name}" | tr 'a-z-' 'A-Z_')"
+            local _pinned_sha="${!_pin_var:-}"
+            if [ -n "${_pinned_sha}" ]; then
+              echo "Cloning $name pinned to ${_pinned_sha} (push-time re-verification pin — the exact commit its promote PR validated against)"
+              if git clone -b live-defi-rollout --depth=1 "https://x-access-token:${GH_PAT}@github.com/${OWNER}/${name}.git" "../${name}" 2>/dev/null; then
+                if ( cd "../${name}" && git fetch --quiet --depth=50 origin "${_pinned_sha}" 2>/dev/null && git checkout --quiet "${_pinned_sha}" 2>/dev/null ); then
+                  return
+                fi
+                echo "WARN: pinned sha ${_pinned_sha} not reachable via shallow fetch for $name — deepening"
+                if ( cd "../${name}" && git fetch --quiet --unshallow 2>/dev/null && git checkout --quiet "${_pinned_sha}" 2>/dev/null ); then
+                  return
+                fi
+                echo "WARN: could not check out pinned sha ${_pinned_sha} for $name — falling back to content-first HEAD"
+                rm -rf "../${name}" 2>/dev/null || true
+              else
+                echo "WARN: base clone for pin resolution failed for $name — falling back to content-first HEAD"
+              fi
+            fi
             for _ldr_attempt in 1 2 3; do
               if git clone -b live-defi-rollout --depth=1 "https://x-access-token:${GH_PAT}@github.com/${OWNER}/${name}.git" "../${name}" 2>/dev/null; then
                 echo "Cloning $name at live-defi-rollout HEAD (content-current — matches local editable siblings)"
@@ -728,6 +812,37 @@ jobs:
             fi
             clone_repo "$repo"
             assert_dep_in_range "$repo"
+          done
+
+      - name: Record dependency pin (PR-time, for push-time re-verification)
+        # Writes the exact resolved dep commit sha (just cloned above by clone_repo's
+        # content-first HEAD path) as a `dep-pin/<repo>` commit status on THIS PR's head sha,
+        # so the push-time re-verification triggered later when this PR merges can pin its
+        # own dep clone to the SAME content instead of re-resolving at whatever HEAD exists
+        # by then — see "Resolve push-time dependency pin" above for the read side and the
+        # full rationale. PR-time only: a push-time run has nothing further to pin against
+        # for itself. Non-blocking on failure (missing scope, API hiccup) — the push-time
+        # side already treats a pin miss as a no-op fallback to today's content-first
+        # behaviour, so a failed status write here never worsens anything beyond that.
+        if: github.event_name == 'pull_request' && steps.vcheck.outputs.skip_slice != 'true' && env.QG_CONTENT_HIT != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          DEP_REPOS: ${{ inputs.dep_repos }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          for _dep in unified-api-contracts unified-trading-library; do
+            case " ${DEP_REPOS} " in
+              *" ${_dep} "*)
+                [ -d "../${_dep}" ] || continue
+                _sha="$(git -C "../${_dep}" rev-parse HEAD 2>/dev/null || echo "")"
+                [ -z "${_sha}" ] && continue
+                gh api "repos/${GITHUB_REPOSITORY}/statuses/${PR_HEAD_SHA}" \
+                  -f state=success -f context="dep-pin/${_dep}" -f description="${_sha}" >/dev/null 2>&1 \
+                  || echo "WARN: could not record dep-pin status for ${_dep} (non-blocking)"
+                ;;
+            esac
           done
 
       - name: Install dependencies
