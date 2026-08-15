@@ -1090,6 +1090,21 @@ jobs:
           # every other sentinel probe in this reusable workflow.
           git fetch --quiet origin live-defi-rollout:refs/remotes/origin/live-defi-rollout 2>&1 || \
             echo "::warning::could not fetch origin/live-defi-rollout — todo-regression check degrades to no-op this run"
+          # Merge-base-aware deepen (2026-08-15, check_todo_regression.sh todo in
+          # plan_hygiene_ratchet_regressions_outpace_serial_ci_fix_velocity_2026_08_09.md):
+          # check_todo_regression.sh now compares against merge-base(HEAD, origin/live-defi-rollout) —
+          # a STABLE fork point — rather than the raw tip just fetched above, which keeps moving on
+          # every re-run under concurrent LDR churn (the exact race this todo documents: a file this
+          # push never touched flagged as "lost" purely because origin grew elsewhere in the retry
+          # gap). This job's checkout is a shallow fetch-depth:2, so merge-base usually can't resolve
+          # without more history; unshallow once (bounded, one-time cost, same pattern already used
+          # for pinned-sha reachability above) so the script's merge-base lookup actually succeeds.
+          # Best-effort: an unshallow failure just leaves the script on its own fallback (the raw
+          # moving-tip comparison, same as before this fix) — never a hard failure here.
+          if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+            git fetch --quiet --unshallow 2>&1 || \
+              echo "::warning::could not unshallow for merge-base resolution — todo-regression check falls back to moving-tip comparison (racy) this run"
+          fi
           # Needed for check_archive_candidates.sh --diff-base origin/main on the promote path
           # (operator ruling 2026-08-06 — archive_candidates_content_verification_backlog_2026_08_06.md).
           # Same best-effort shape as the LDR fetch above: a fetch failure degrades to baseline mode.
