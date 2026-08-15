@@ -1527,14 +1527,20 @@ jobs:
           DURATION_MIN=$(( (NOW_EPOCH - STREAK_START_EPOCH) / 60 ))
           echo "promote-PR QG failure streak for ${{ github.repository }} (across PR supersessions): ${DURATION_MIN}min continuous"
           echo "duration_min=${DURATION_MIN}" >> "$GITHUB_OUTPUT"
-          if [ "${DURATION_MIN}" -ge 15 ]; then
+          if [ "${DURATION_MIN}" -ge 30 ]; then
             echo "still_failing=true" >> "$GITHUB_OUTPUT"
           else
             echo "still_failing=false" >> "$GITHUB_OUTPUT"
           fi
 
       # ── Tier 3 — escalate to an agent once the streak crosses 30min (2026-08-12, redesigned
-      # 2026-08-13 alongside the streak logic above — same job now, no second sleep-gated job).
+      # 2026-08-13 alongside the streak logic above — same job now, no second sleep-gated job;
+      # RE-ALIGNED 2026-08-15: the Slack CRITICAL threshold above moved 15min -> 30min, matching
+      # this escalation's own threshold, so the two tiers now fire together in the SAME run off
+      # the SAME duration_min reading instead of staggered 15-then-30 — deliberately gives a
+      # failing promote-PR streak more room to self-resolve via ordinary supersession before
+      # paging a human at all, and removes the redundant "Slack already warned, now escalate"
+      # framing since there's no longer a temporal gap between the two).
       # wall_type=promote_qg_failure routes to the dedicated quality_gate_resolution role (not
       # the generic cicd catch-all) — see server/escalation.py WALL_TYPES and
       # codex/04-architecture/agent-orchestrator-ci-escalation-wall-types.md for the full design.
@@ -1548,7 +1554,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          [ -z "${GH_PAT}" ] && echo "GH_PAT not set — skipping escalation dispatch (Slack alert already fired at 15min)" && exit 0
+          [ -z "${GH_PAT}" ] && echo "GH_PAT not set — skipping escalation dispatch (the same-run Slack CRITICAL still fires independently)" && exit 0
           echo "streak is ${DURATION_MIN}min old (>=30) — dispatching escalation (server dedupes re-fires onto the open row via root_key)"
           # MUST target unified-trading-pm, NOT ${{ github.repository }} — the
           # escalate-to-orchestrator.yml LISTENER lives only there (same gotcha
@@ -1561,7 +1567,7 @@ jobs:
             -f "client_payload[context]=${REPO_NAME}'s promote-PR quality-gates-v2 has been CONTINUOUSLY red for ${DURATION_MIN}min across successive promote-PR supersessions (current PR #${PR_NUMBER}) — not a promote-cadence race. Run: ${RUN_URL}. Fix the root cause on live-defi-rollout (never the promote PR branch itself — it is ephemeral and the drain bot will supersede it regardless)." \
             -f 'client_payload[model]=sonnet' \
             >/dev/null 2>&1 && echo "escalated promote_qg_failure for ${REPO_NAME}#${PR_NUMBER} to orchestrator (streak=${DURATION_MIN}min)" \
-            || echo "::warning::orchestrator escalation dispatch failed (non-fatal — the 15min Slack CRITICAL already alerted a human)"
+            || echo "::warning::orchestrator escalation dispatch failed (non-fatal — the same-run Slack CRITICAL still alerted a human)"
 
   notify-qg-fail:
     name: Slack CRITICAL — QG Slice Failed
