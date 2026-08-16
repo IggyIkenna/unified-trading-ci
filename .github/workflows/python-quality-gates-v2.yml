@@ -1174,6 +1174,13 @@ jobs:
       recovered: ${{ steps.record_decide.outputs.recovered }}
       # True when content-gate+slices both failed with no real execution (billing wall / outage kill).
       billing_kill: ${{ steps.record_ci_status.outputs.billing_kill }}
+      # Alert-linkage (2026-08-16): the sha that began the CURRENT failure streak on this branch
+      # (set only when this run's own verdict is a failure), and the sha that began the streak
+      # this run just RESOLVED (set only when recovered=true). notify-qg-fail and
+      # notify-qg-recovered cite these so a reader can match a CRITICAL to its eventual GREEN by
+      # the same identifier instead of inferring it from timing or PR-number chains.
+      current_streak_start_sha: ${{ steps.record_decide.outputs.current_streak_start_sha }}
+      resolved_streak_start_sha: ${{ steps.record_decide.outputs.resolved_streak_start_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1485,6 +1492,7 @@ jobs:
           RESULT: ${{ needs.qg-slices.result }}
           REPO: ${{ github.event.repository.name }}
           KEY_BRANCH: ${{ github.event_name == 'pull_request' && github.base_ref || github.ref_name }}
+          CURRENT_SHA: ${{ github.sha }}
         run: |
           set -uo pipefail
           # Only a conclusive verdict updates the memory — 'skipped' (this leg never ran, e.g. a
@@ -1500,13 +1508,27 @@ jobs:
               ;;
           esac
           RECOVERED=false
+          # streak_start_sha (2026-08-16, alert-linkage): the sha that began the CURRENT continuous
+          # red-or-green run on this branch — same field name/semantics whether the branch is
+          # currently failing or has just recovered. Preserved unchanged across consecutive
+          # same-verdict runs; re-seeded to this run's own sha the moment the verdict flips. This
+          # is the identifier notify-qg-fail's CRITICAL and notify-qg-recovered's GREEN post both
+          # cite, so a reader can grep one sha and see the whole incident's start + resolution
+          # instead of inferring it from timing/PR-number chains. See
+          # plans/active/issues/ci_alert_failure_resolution_linkage_2026_08_16.md (unified-trading-pm).
           if [ -n "${TOKEN:-}" ] && [ -n "${PROJECT:-}" ]; then
             SAFE_KEY="$(printf 'qg-fail:%s:%s' "${REPO}" "${KEY_BRANCH}" | tr -c 'A-Za-z0-9._-' '_')"
             DOC_URL="https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents/qg_last_conclusion/${SAFE_KEY}"
-            PREV="$(curl -s --max-time 15 -H "Authorization: Bearer ${TOKEN}" "${DOC_URL}" \
-              | jq -r '.fields.conclusion.stringValue // empty' 2>/dev/null || echo "")"
+            PREV_JSON="$(curl -s --max-time 15 -H "Authorization: Bearer ${TOKEN}" "${DOC_URL}" 2>/dev/null || echo '{}')"
+            PREV="$(echo "${PREV_JSON}" | jq -r '.fields.conclusion.stringValue // empty' 2>/dev/null || echo "")"
+            PREV_STREAK_START="$(echo "${PREV_JSON}" | jq -r '.fields.streak_start_sha.stringValue // empty' 2>/dev/null || echo "")"
             if [ "${PREV}" = "failure" ] && [ "${CURRENT}" = "success" ]; then
               RECOVERED=true
+            fi
+            if [ "${PREV}" = "${CURRENT}" ] && [ -n "${PREV_STREAK_START}" ]; then
+              STREAK_START="${PREV_STREAK_START}"
+            else
+              STREAK_START="${CURRENT_SHA}"
             fi
             NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             CODE="$(curl -s -o /tmp/qg-result-save.json -w '%{http_code}' --max-time 15 -X PATCH \
@@ -1517,12 +1539,19 @@ jobs:
                     \"repo\": {\"stringValue\": \"${REPO}\"},
                     \"branch\": {\"stringValue\": \"${KEY_BRANCH}\"},
                     \"commit_sha\": {\"stringValue\": \"${GITHUB_SHA}\"},
+                    \"streak_start_sha\": {\"stringValue\": \"${STREAK_START}\"},
                     \"updated_at\": {\"timestampValue\": \"${NOW}\"}
                   }}" || echo 000)"
             [ "${CODE}" = "200" ] || echo "::warning::qg_last_conclusion save failed (HTTP ${CODE}) for ${SAFE_KEY} — best-effort, next run retries."
-            echo "qg-result-memory: ${SAFE_KEY} prev=${PREV:-<none>} current=${CURRENT} recovered=${RECOVERED}"
+            echo "qg-result-memory: ${SAFE_KEY} prev=${PREV:-<none>} current=${CURRENT} recovered=${RECOVERED} streak_start=${STREAK_START}"
+            if [ "${CURRENT}" = "failure" ]; then
+              echo "current_streak_start_sha=${STREAK_START}" >> "$GITHUB_OUTPUT"
+            fi
+            if [ "${RECOVERED}" = "true" ]; then
+              echo "resolved_streak_start_sha=${PREV_STREAK_START:-${CURRENT_SHA}}" >> "$GITHUB_OUTPUT"
+            fi
           else
-            echo "GCP auth unavailable — skipping QG-result memory this run (fail-open: no recovery post, no state corruption)."
+            echo "GCP auth unavailable — skipping QG-result memory this run (fail-open: no recovery post, no state corruption, no streak-id this run)."
           fi
           echo "recovered=${RECOVERED}" >> "$GITHUB_OUTPUT"
 
@@ -1701,7 +1730,14 @@ jobs:
 
   notify-qg-fail:
     name: Slack CRITICAL — QG Slice Failed
-    needs: [content-gate, qg-slices, supersede-check, debounce-promote-qg-fail]
+    needs:
+      [
+        content-gate,
+        qg-slices,
+        supersede-check,
+        debounce-promote-qg-fail,
+        quality-gates-v2,
+      ]
     if: |
       always() &&
       needs.content-gate.outputs.cache_hit != 'true' &&
@@ -1713,12 +1749,19 @@ jobs:
       )
     uses: ./.github/workflows/notify-slack.yml
     with:
+      # Alert-linkage (2026-08-16): cites current_streak_start_sha from quality-gates-v2 (added as
+      # a `needs:` dependency for exactly this) — the SAME identifier notify-qg-recovered's GREEN
+      # post cites when this streak eventually resolves, printed only when it's known (best-effort:
+      # empty on a GCP-auth outage, never fabricated) and only when it differs from this run's own
+      # sha (a brand-new streak citing itself would be redundant noise).
       message:
         "${{ needs.qg-slices.result == 'cancelled' && ':warning: *QG slice CANCELLED / TIMED-OUT* (timeout-minutes hit,
         OOM, or cancel)' || ':x: *QG slice(s) FAILED*' }} | *${{ github.event.repository.name }}* | ${{
         github.event_name == 'pull_request' && format('PR #{0} `{1}` → `{2}`', github.event.pull_request.number,
         github.head_ref, github.base_ref) || format('push to `{0}`', github.ref_name) }} | <${{ github.server_url }}/${{
-        github.repository }}/actions/runs/${{ github.run_id }}|sha `${{ github.sha }}`>"
+        github.repository }}/actions/runs/${{ github.run_id }}|sha `${{ github.sha }}`>${{
+        (needs.quality-gates-v2.outputs.current_streak_start_sha != '' && needs.quality-gates-v2.outputs.current_streak_start_sha != github.sha)
+        && format(' · incident since `{0}`', needs.quality-gates-v2.outputs.current_streak_start_sha) || '' }}"
       severity: CRITICAL
       workflow_name: python-quality-gates-v2
       run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1756,11 +1799,16 @@ jobs:
     if: always() && needs.quality-gates-v2.outputs.recovered == 'true'
     uses: ./.github/workflows/notify-slack.yml
     with:
+      # Alert-linkage (2026-08-16): cites resolved_streak_start_sha — the SAME identifier
+      # notify-qg-fail's CRITICAL cited for this incident's opening post, so a reader can grep one
+      # sha and see both ends of the incident instead of inferring the link from timing.
       message:
         "🟢 *QG RECOVERED* | *${{ github.event.repository.name }}* | ${{ github.event_name == 'pull_request' &&
         format('PR #{0} `{1}` → `{2}`', github.event.pull_request.number, github.head_ref, github.base_ref) ||
         format('push to `{0}`', github.ref_name) }} | <${{ github.server_url }}/${{ github.repository
-        }}/actions/runs/${{ github.run_id }}|sha `${{ github.sha }}`> — green again after a prior failure"
+        }}/actions/runs/${{ github.run_id }}|sha `${{ github.sha }}`> — green again after a prior failure${{
+        (needs.quality-gates-v2.outputs.resolved_streak_start_sha != '' && needs.quality-gates-v2.outputs.resolved_streak_start_sha != github.sha)
+        && format(' (incident since `{0}`)', needs.quality-gates-v2.outputs.resolved_streak_start_sha) || '' }}"
       severity: INFO
       conclusion: success
       recovery: true
