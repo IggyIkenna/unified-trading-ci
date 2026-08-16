@@ -1,11 +1,7 @@
-# Canonical pre-commit config for unified-trading-ci (YAML-only CI workflows repo).
-# Template SSOT: unified-trading-pm/scripts/pre-commit-templates/python-service.pre-commit-config.yaml
+# Canonical pre-commit config for Python services and API services.
+# Template SSOT: unified-trading-pm/scripts/pre-commit-templates/
 # Rollout: bash unified-trading-pm/scripts/propagation/rollout-pre-commit-configs.sh
 # Setup: pre-commit install --install-hooks
-#
-# Differs from the python-service template only in dropping Ruff (no Python code
-# in this repo — it is 100% reusable GitHub Actions workflow YAML).
- # This is the pre-commit config for the unified-trading-ci repository.
 
 default_install_hook_types:
   - pre-commit
@@ -44,6 +40,19 @@ repos:
         pass_filenames: false
         fail_fast: true # behind-origin -> STOP before any formatter mutates (no reflow residue that breaks slot FF-sync)
 
+  # Gitignore re-add gate — blocks a staged file that matches the repo's own
+  # .gitignore (only reachable via `git add -f`; add -A/. already skip ignored
+  # paths). SSOT: scripts/hooks/check-gitignore-readd.sh.
+  - repo: local
+    hooks:
+      - id: check-gitignore-readd
+        name: Block re-adding a gitignored path
+        entry:
+          bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
+          pwd)}/unified-trading-pm/scripts/hooks/check-gitignore-readd.sh"; [ -f "$HOOK" ] || exit 0; bash "$HOOK"'
+        language: system
+        pass_filenames: false
+
   # Quickmerge-provenance gate — the commit-TIME half of check_strict_quickmerge.py's
   # pre-push carve-out logic (SSOT there: commit_violates()/_is_source()/NONSOURCE_DIR).
   # A raw `git commit` of a source file with no `Quickmerge:` trailer was previously only
@@ -62,8 +71,17 @@ repos:
         language: system
         stages: [commit-msg]
 
+  # Ruff - Fast Python linter AND formatter
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.0
+    hooks:
+      - id: ruff
+        name: Lint with Ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+        name: Format with Ruff
+
   # Prettier - auto-stage wrapper (see docs.pre-commit-config.yaml for rationale).
-  # Covers YAML and Markdown — the only content types in this repo.
   - repo: local
     hooks:
       - id: prettier-autostage
@@ -72,7 +90,7 @@ repos:
           bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
           pwd)}/unified-trading-pm/scripts/hooks/prettier-autostage.sh"; [ -f "$HOOK" ] || exit 0; bash "$HOOK" "$@"' --
         language: system
-        types_or: [yaml, markdown]
+        types_or: [ts, tsx, javascript, jsx, json, markdown, yaml]
 
   # Secret scanning — gitleaks (catches GCP SA keys, GitHub PATs, API keys)
   # Config SSOT: unified-trading-pm/.gitleaks.toml (propagated here at rollout)
@@ -90,6 +108,8 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        exclude: "^cloudbuild\\.yaml$"
+      - id: check-toml
       - id: check-added-large-files
         args: ["--maxkb=1000"]
       - id: check-merge-conflict
