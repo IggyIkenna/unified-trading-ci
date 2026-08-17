@@ -605,6 +605,72 @@ jobs:
           BASE_REF="${DEP_BASE_REF:-}"
           OWNER="${GITHUB_REPOSITORY_OWNER}"
 
+          # Shared bare-repo + `git worktree` fast path for the content-first live-defi-rollout
+          # clone (ci_vm_io_starvation_audit_findings_and_optimization_2026_08_05.md Part 4/Part 8
+          # "Cut sibling-clone I/O": shared bare repos + git worktree + --filter=blob:none for dep
+          # repos, required to get peak throughput under the EBS baseline a smaller instance
+          # imposes). OPT-IN and self-healing, same philosophy as fast-checkout.sh's mirror path:
+          # only attempts when SHARED_BARE_ROOT already exists (provisioned self-hosted glue hosts
+          # only — ubuntu-latest and any unprovisioned host silently gets EXACTLY today's clone_repo
+          # behavior, this function returns 1 immediately and nothing below it changes). On a
+          # provisioned host it fetches into a persistent bare mirror (--filter=blob:none,
+          # gc.auto=0 — see prune-shared-bare-repo-worktrees.timer for the GC-equivalent hygiene
+          # the source doc calls out) instead of a cold full clone, then `git worktree add`s the
+          # job's dep dir from it. ANY failure at ANY step falls through to the untouched
+          # clone_repo() chain below — this can never make dep resolution WORSE than today, only
+          # sometimes faster. Explicitly excludes the cp -al shared-venv half of the 08-05 design
+          # the source doc superseded — each job still builds its own venv via uv, no shared venv
+          # path is introduced here (venv immutability contract: untouched by this fast path).
+          SHARED_BARE_ROOT="${SHARED_BARE_ROOT:-/opt/glue-shared-bare-repos}"
+          clone_repo_via_shared_bare() {
+            local name="$1"
+            [ -d "${SHARED_BARE_ROOT}" ] || return 1
+            [ ! -e "../${name}" ] || return 1
+
+            local bare="${SHARED_BARE_ROOT}/${name}.git"
+            local url="https://x-access-token:${GH_PAT}@github.com/${OWNER}/${name}.git"
+            # `git -C <bare> worktree add <path>` resolves a RELATIVE <path> against <bare>'s own
+            # directory, not the caller's cwd — must be absolute. The parent dir (the job's own
+            # dep-checkout root, one level above this job's primary-repo checkout) already exists.
+            local target_abs
+            target_abs="$(cd .. && pwd)/${name}"
+
+            if [ ! -d "${bare}" ]; then
+              echo "Seeding shared bare mirror for ${name} (first use on this host)"
+              git clone --bare --filter=blob:none --quiet "${url}" "${bare}" 2>/dev/null || return 1
+              git -C "${bare}" config gc.auto 0
+            fi
+            git config --global --add safe.directory "${bare}" 2>/dev/null || true
+            # Opportunistic hygiene, and MUST run before the fetch below: a PRIOR job's `_work`
+            # dir can have been wiped (job-cleanup.sh / JIT-ephemeral ExecStart) without a
+            # matching `worktree remove`, which leaves live-defi-rollout registered as "checked
+            # out" at that now-gone path — git then REFUSES to fetch into that branch at all
+            # ("refusing to fetch into branch ... checked out at ..."), not just refuses the
+            # worktree add. prune-shared-bare-repo-worktrees.timer is the standing backstop for a
+            # bare repo that stops being actively used at all (so nothing ever reaches this line
+            # to prune it opportunistically).
+            git -C "${bare}" worktree prune --expire now 2>/dev/null || true
+            git -C "${bare}" remote set-url origin "${url}" 2>/dev/null || return 1
+            git -C "${bare}" fetch --filter=blob:none --quiet origin "live-defi-rollout:live-defi-rollout" 2>/dev/null || return 1
+
+            if ! git -C "${bare}" worktree add --force --quiet "${target_abs}" live-defi-rollout 2>/dev/null; then
+              return 1
+            fi
+            git config --global --add safe.directory "${target_abs}" 2>/dev/null || true
+
+            local actual expected
+            actual="$(git -C "${target_abs}" rev-parse HEAD 2>/dev/null || echo "")"
+            expected="$(git -C "${bare}" rev-parse live-defi-rollout 2>/dev/null || echo "")"
+            if [ -z "${actual}" ] || [ "${actual}" != "${expected}" ]; then
+              echo "WARN: shared-bare worktree HEAD mismatch for ${name} (actual=${actual:-<none>} expected=${expected:-<none>}) — falling back"
+              git -C "${bare}" worktree remove --force "${target_abs}" 2>/dev/null || true
+              return 1
+            fi
+
+            echo "Cloning $name at live-defi-rollout HEAD via shared bare-repo + worktree fast path (verified HEAD=${actual})"
+            return 0
+          }
+
           # Version-aware clone: read pyproject.toml constraint for each dep,
           # find the latest git tag matching the constraint, and clone at that tag.
           get_version_tag() {
@@ -707,6 +773,9 @@ jobs:
               else
                 echo "WARN: base clone for pin resolution failed for $name — falling back to content-first HEAD"
               fi
+            fi
+            if clone_repo_via_shared_bare "$name"; then
+              return
             fi
             for _ldr_attempt in 1 2 3; do
               if git clone -b live-defi-rollout --depth=1 "https://x-access-token:${GH_PAT}@github.com/${OWNER}/${name}.git" "../${name}" 2>/dev/null; then
