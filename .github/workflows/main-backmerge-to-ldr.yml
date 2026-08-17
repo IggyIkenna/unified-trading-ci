@@ -194,6 +194,63 @@ jobs:
             return 0
           }
 
+          # ── Silent-deletion guard (main_ldr_backmerge_silently_reapplies_collateral_frontmatter_deletion_2026_08_17.md) ──
+          # Root cause: a plain git 3-way merge treats "ours (LDR) unchanged since base, theirs (main)
+          # changed" as an unconditional, unreviewed acceptance of theirs' change -- including a
+          # DELETION. A frontmatter key or `- [ ]` todo line dropped from `main` as pure COLLATERAL of
+          # some unrelated resolution (e.g. a "kept their side entirely" conflict resolution) then
+          # round-trips back onto LDR with a clean auto-merge and no conflict marker, because from
+          # this merge's point of view LDR never touched the file -- confirmed live 2026-08-17 on
+          # plans/active/issues/manifest_hygiene_red_all_2026_08_17.md's `author:` key (dropped by
+          # a6e4afc11d, silently RE-dropped by a later backmerge after round-tripping through an
+          # LDR->main promotion). Scoped to the two highest-value loss shapes named in that issue doc:
+          # YAML frontmatter keys (checked ONLY inside the literal `---`...`---` block via
+          # _frontmatter_block, so an ordinary "Word: text" prose line in the doc body never
+          # false-positives) and `- [ ]`/`- [x]` todo checkbox lines (checked file-wide -- a fairly
+          # unambiguous, low-false-positive syntax). Deliberately narrower than
+          # check_no_silent_revert_loss above: only fires for the exact "ours unchanged since base"
+          # shape the issue doc's mechanism table describes -- a file BOTH sides touched is a real,
+          # git-reported-conflict-eligible change and stays out of scope for this guard.
+          # $1=base (merge-base, explicit trailer SHA or git-computed) $2=ldr_tip (ours)
+          # $3=theirs (origin/main) $4=result tree-ish. Echoes the flagged file/line list and returns
+          # 1 on a hit; silent 0 otherwise -- same contract as check_no_silent_revert_loss.
+          _frontmatter_block() {
+            awk 'NR==1 && $0=="---" {infm=1; next} infm && $0=="---" {exit} infm {print}'
+          }
+          check_no_silent_frontmatter_or_todo_loss() {
+            local base="$1" ldr_tip="$2" theirs="$3" result_treeish="$4"
+            local theirs_changed ours_changed flagged=""
+            theirs_changed="$(git diff --name-only "$base" "$theirs" 2>/dev/null)" || return 0
+            [ -z "$theirs_changed" ] && return 0
+            ours_changed="$(git diff --name-only "$base" "$ldr_tip" 2>/dev/null)" || ours_changed=""
+            while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              # Base-vs-theirs ONLY: a file ours (LDR) also touched since base is a real,
+              # git-reported-conflict-eligible change, not this silent-collateral class.
+              printf '%s\n' "$ours_changed" | grep -qxF "$f" && continue
+              local removed_fm removed_todo
+              removed_fm="$(diff <(git show "${base}:${f}" 2>/dev/null | _frontmatter_block) \
+                                  <(git show "${result_treeish}:${f}" 2>/dev/null | _frontmatter_block) 2>/dev/null \
+                            | grep -E '^< ' | sed -E 's/^< //' \
+                            | grep -E '^[A-Za-z_][A-Za-z0-9_-]*:' || true)"
+              removed_todo="$(diff <(git show "${base}:${f}" 2>/dev/null) \
+                                    <(git show "${result_treeish}:${f}" 2>/dev/null) 2>/dev/null \
+                              | grep -E '^< ' | sed -E 's/^< //' \
+                              | grep -E '^[[:space:]]*-[[:space:]]*\[[ xX]\]' || true)"
+              if [ -n "$removed_fm" ] || [ -n "$removed_todo" ]; then
+                local _entry="${f}:"
+                [ -n "$removed_fm" ] && _entry="${_entry}frontmatter[$(printf '%s' "$removed_fm" | tr '\n' ';')]"
+                [ -n "$removed_todo" ] && _entry="${_entry}todo[$(printf '%s' "$removed_todo" | tr '\n' ';')]"
+                flagged="$flagged $_entry"
+              fi
+            done <<< "$theirs_changed"
+            if [ -n "$flagged" ]; then
+              echo "$flagged"
+              return 1
+            fi
+            return 0
+          }
+
           DECISION="race"
           REASON="LDR kept advancing; exhausted retries"
           for attempt in 1 2 3; do
@@ -207,7 +264,14 @@ jobs:
               # ── Explicit-base path (Candidate 1 — the root fix) ──────────────────────────
               if MT_OUT="$(git merge-tree --write-tree --merge-base="$TRAILER_SHA" HEAD origin/main 2>&1)"; then
                 NEW_TREE="$(printf '%s\n' "$MT_OUT" | head -1)"
-                if SILENT_LOSS_FLAGGED="$(check_no_silent_revert_loss "$LDR_TIP" "$NEW_TREE")"; then
+                SILENT_LOSS_FLAGGED=""
+                if ! _REVERT_FLAG="$(check_no_silent_revert_loss "$LDR_TIP" "$NEW_TREE")"; then
+                  SILENT_LOSS_FLAGGED="${SILENT_LOSS_FLAGGED}${_REVERT_FLAG}"
+                fi
+                if ! _FM_FLAG="$(check_no_silent_frontmatter_or_todo_loss "$TRAILER_SHA" "$LDR_TIP" origin/main "$NEW_TREE")"; then
+                  SILENT_LOSS_FLAGGED="${SILENT_LOSS_FLAGGED}${_FM_FLAG}"
+                fi
+                if [ -z "$SILENT_LOSS_FLAGGED" ]; then
                   NEW_COMMIT="$(git commit-tree "$NEW_TREE" -p "$LDR_TIP" -p "$(git rev-parse origin/main)" \
                     -m "Merge remote-tracking branch 'origin/main' into _backmerge")"
                   git reset --hard "$NEW_COMMIT" --quiet
@@ -256,7 +320,15 @@ jobs:
                 fi
               fi
               if [ "$MERGE_CONFLICT" != "true" ]; then
-                if ! SILENT_LOSS_FLAGGED="$(check_no_silent_revert_loss "$LDR_TIP" "HEAD")"; then
+                SILENT_LOSS_FLAGGED=""
+                if ! _REVERT_FLAG="$(check_no_silent_revert_loss "$LDR_TIP" "HEAD")"; then
+                  SILENT_LOSS_FLAGGED="${SILENT_LOSS_FLAGGED}${_REVERT_FLAG}"
+                fi
+                _MERGE_BASE_SHA="$(git merge-base "$LDR_TIP" origin/main 2>/dev/null || echo "")"
+                if [ -n "$_MERGE_BASE_SHA" ] && ! _FM_FLAG="$(check_no_silent_frontmatter_or_todo_loss "$_MERGE_BASE_SHA" "$LDR_TIP" origin/main HEAD)"; then
+                  SILENT_LOSS_FLAGGED="${SILENT_LOSS_FLAGGED}${_FM_FLAG}"
+                fi
+                if [ -n "$SILENT_LOSS_FLAGGED" ]; then
                   MERGE_CONFLICT=true
                 fi
               fi
@@ -265,8 +337,8 @@ jobs:
             if [ "$MERGE_CONFLICT" = "true" ]; then
               if [ -n "$SILENT_LOSS_FLAGGED" ]; then
                 DECISION="conflict"
-                REASON="safety-net: merge would silently discard LDR's own last commit's effect on:${SILENT_LOSS_FLAGGED} — human resolution required (no auto-resolve)"
-                echo "[backmerge] ⛔ SILENT-REVERT-LOSS SAFETY NET TRIPPED:${SILENT_LOSS_FLAGGED}"
+                REASON="safety-net: merge would silently discard content on:${SILENT_LOSS_FLAGGED} — human resolution required (no auto-resolve)"
+                echo "[backmerge] ⛔ SILENT-LOSS SAFETY NET TRIPPED:${SILENT_LOSS_FLAGGED}"
               else
                 DECISION="conflict"
                 REASON="main and LDR conflict — human resolution required (no auto-resolve)"
