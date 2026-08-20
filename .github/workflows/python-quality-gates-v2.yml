@@ -1564,13 +1564,18 @@ jobs:
           echo "recovered=${RECOVERED}" >> "$GITHUB_OUTPUT"
 
   # ── SUPERSEDE CHECK — is this run's verdict still authoritative? ─────────────
-  # The caller template sets `concurrency.cancel-in-progress: github.event_name == 'push'`,
-  # so a newer push KILLS the in-flight run on the same ref. The killed run's roll-up reads
-  # 'cancelled' even when every slice had already PASSED — measured 2026-07-16 on
-  # instruments-service run 29488628505: the tests slice's own "Run quality gates" step
-  # succeeded at 09:54:39, the job was cancelled 7s later by the 09:54:44 push, and the
-  # superseding run 29488897064 then went green. That paged CRITICAL twice (the QG notify
-  # below + a ci_status MAIN_GREEN→FAILING regression) for a tree that was never broken.
+  # Most callers key `concurrency.group` on `github.ref` with `cancel-in-progress: true`
+  # (unconditional -- NOT gated on `event_name == 'push'`, despite an earlier version of this
+  # comment claiming otherwise; see the `pull_request`-only exemption below for why that no
+  # longer matters), so a newer push (or workflow_dispatch, or anything else sharing the ref)
+  # KILLS the in-flight run on the same ref. The killed run's roll-up reads 'cancelled' even
+  # when every slice had already PASSED — measured 2026-07-16 on instruments-service run
+  # 29488628505: the tests slice's own "Run quality gates" step succeeded at 09:54:39, the job
+  # was cancelled 7s later by the 09:54:44 push, and the superseding run 29488897064 then went
+  # green. That paged CRITICAL twice (the QG notify below + a ci_status MAIN_GREEN→FAILING
+  # regression) for a tree that was never broken. Recurred 2026-08-20 on agent-orchestrator run
+  # 32343360027 -- a `workflow_dispatch` run sharing the same ref-scoped group as an ordinary
+  # push, cancelled by that push, paged CRITICAL for a tree that was never broken.
   #
   # A superseded run's verdict is NOT authoritative: the newest run on the tip SHA owns it
   # and pages on its own if genuinely red, so nothing is lost by staying quiet here. A run
@@ -1597,10 +1602,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
-          # cancel-in-progress is push-only, so a PR / workflow_dispatch cancellation is
-          # always real — never suppress those.
-          if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
-            echo "event=${GITHUB_EVENT_NAME} (not push) — cancellation is real, not a supersede."
+          # Corrected 2026-08-20: this used to assume "cancel-in-progress is push-only, so a
+          # PR / workflow_dispatch cancellation is always real" -- that assumption does NOT
+          # hold for every caller. The concurrency group is keyed on `github.ref`
+          # (`quality-gates-v2-${{ github.ref }}`), and several callers (e.g.
+          # agent-orchestrator's .github/workflows/quality-gates-v2.yml) set
+          # `cancel-in-progress: true` UNCONDITIONALLY, not gated on `event_name == 'push'` as
+          # this comment used to claim. A `workflow_dispatch` run targeting a branch (e.g. a
+          # manual QG re-run/recovery dispatch) resolves to the SAME ref as an ordinary push to
+          # that branch, so it lands in the identical concurrency group and CAN be legitimately
+          # cancelled by a later push -- live incident: agent-orchestrator run 32343360027
+          # (workflow_dispatch on live-defi-rollout, sha 0c231002) was cancelled 07:29:21 by a
+          # push landing 07:29:03, paged CRITICAL, yet the newer commit's own run was green.
+          #
+          # `pull_request` is the one event genuinely exempt: its group is scoped per-PR
+          # (`refs/pull/<n>/merge`, unique per PR -- see this workflow's own header comment), so
+          # a cancellation there can only ever come from a newer push to the SAME PR, which is a
+          # real, well-defined supersede in its own right (not this job's concern -- PR runs
+          # never reach this job in the first place today, but keep the exemption explicit
+          # rather than silently relying on that).
+          if [ "${GITHUB_EVENT_NAME}" == "pull_request" ]; then
+            echo "event=pull_request — its concurrency group is isolated per-PR, cancellation is real, not a supersede."
             echo "superseded=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           TIP="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}" --jq .sha 2>/dev/null || true)"
