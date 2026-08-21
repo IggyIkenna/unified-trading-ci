@@ -1671,6 +1671,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
+
+          # SIBLING-SUCCESS CHECK (2026-08-21, /ci-reconcile): distinct from the 2026-08-20 fix
+          # below (a genuinely NEWER commit superseding this one — tip comparison catches that).
+          # This is a DUPLICATE dispatch of the IDENTICAL still-current sha: cascade-qg-ordering.yml's
+          # dispatch_qg() fires a bare workflow_dispatch per affected repo with no check for an
+          # already-in-flight run on the same commit; when that collides with a push/PR-triggered
+          # run already checking the same sha, GH's concurrency group cancels the older duplicate.
+          # Tip comparison below cannot see this (the sha never changed) and pages CRITICAL even
+          # though the sibling run goes green seconds later. Measured live 2026-08-21:
+          # execution-service runs 32471287661 (workflow_dispatch, cancelled, 10:09:04Z) and
+          # 32471291587 (workflow_dispatch, SUCCESS, 10:09:07Z) — same sha, 3s apart — plus 8 more
+          # repos paged the same way in the same minute (agent-orchestrator, alerting-service,
+          # deployment-api, client-reporting-api, deployment-service, e2e-testing,
+          # unified-trading-library, system-integration-tests, batch-live-reconciliation-service,
+          # fund-administration-service). Check this FIRST — it is a strictly stronger, event-type-
+          # agnostic signal of benign cancellation than the tip comparison below.
+          SIBLING_SUCCESS="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/quality-gates-v2.yml/runs?head_sha=${GITHUB_SHA}&per_page=20" \
+            --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID} and .conclusion == \"success\")] | length" 2>/dev/null || echo 0)"
+          if [ "${SIBLING_SUCCESS:-0}" -gt 0 ]; then
+            echo "SUPERSEDED — a sibling run on the same sha (${GITHUB_SHA}) already succeeded (duplicate/retry dispatch collision, not a real cancel)."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
           # Corrected 2026-08-20: this used to assume "cancel-in-progress is push-only, so a
           # PR / workflow_dispatch cancellation is always real" -- that assumption does NOT
           # hold for every caller. The concurrency group is keyed on `github.ref`
